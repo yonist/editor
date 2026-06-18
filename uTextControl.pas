@@ -14,7 +14,15 @@ type
     Paints the content with a monospace font and handles basic text input
     (printable chars, space, backspace, return). Supports soft word wrap via a
     TLayout (the logical text in TContent is never modified). The caret position
-    is tracked in a TCaret. }
+    is tracked in a TCaret.
+
+    Caret invariants (A+B+C):
+      A. The logical caret is only ever written through SetCaret, which clamps
+         it exactly once. (CaretChanged handles the one external write path.)
+      B. Readers therefore trust the caret is valid and never re-clamp.
+      C. The caret's content-space pixel is cached (FCaretContentX/Y); the
+         expensive logical->pixel map (RecalcCaretPixel) runs only when marked
+         dirty, while scroll/paint just re-offset it cheaply (PlaceCaret). }
   TTextControl = class(TScrollControl)
   private
     FContent: TContent;
@@ -25,13 +33,20 @@ type
     FLineHeight: Integer;    // row height, px (cached)
     FCaretFollowPending: Boolean;  // SetPosition requested before viewport was ready
     FGoalCol: Integer;             // preferred visual column for vertical navigation
+    FCaretContentX: Integer;       // caret pixel in content space (cached)
+    FCaretContentY: Integer;
+    FCaretDirty: Boolean;          // cached content-space pixel is stale
     procedure ClampCaret;
+    procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
     procedure SyncGoalCol;
+    procedure RecalcCaretPixel;
+    procedure PlaceCaret;
+    procedure RefreshCaret;
+    procedure ReconcileCaret;
+    procedure EnsureCaretVisible;
     procedure MeasureFont;
     procedure RebuildLayout;
-    procedure UpdateCaretPos;
-    procedure EnsureCaretVisible;
     procedure CaretChanged(Sender: TObject);
     procedure SetWordWrap(AValue: Boolean);
   protected
@@ -87,6 +102,7 @@ begin
   FCaret := TCaret.Create;
   FCaret.OnChange := CaretChanged;   // SetPosition must keep the caret in view
   FWordWrap := True;
+  FCaretDirty := True;
 
   // Only monospace fonts are supported.
   Font.BeginUpdate;
@@ -106,6 +122,8 @@ begin
   inherited Destroy;
 end;
 
+{ ---- caret invariant (A): the one place the caret is written + clamped ---- }
+
 procedure TTextControl.ClampCaret;
 var
   LineLen: Integer;
@@ -122,7 +140,6 @@ begin
     LineLen := Length(FContent[FCaret.Line]);
     if FCaret.Col > LineLen then
        FCaret.Col := LineLen;
-
   end;
 
   // Don't let the caret enter the read-only region (no-op for the editor,
@@ -135,17 +152,84 @@ begin
   end;
 end;
 
+procedure TTextControl.SetCaret(ALine, ACol: Integer);
+begin
+  FCaret.Line := ALine;
+  FCaret.Col := ACol;
+  ClampCaret;             // the single validation point (A)
+  FCaretDirty := True;    // logical position changed -> pixel needs recompute (C)
+end;
+
 function TTextControl.EditableStart: TPoint;
 begin
   Result := Point(0, 0);
 end;
 
+{ ---- caret pixel cache (C): expensive map runs only when dirty ---- }
+
+procedure TTextControl.RecalcCaretPixel;
+var
+  Vr: Integer;
+  Row: TVisualRow;
+begin
+  // Leave the caret dirty (cached pixel unchanged) if we can't map it yet -
+  // e.g. the layout hasn't been rebuilt for just-added content. A later
+  // RefreshCaret/ReconcileCaret retries once the layout is current.
+  if (FLayout = nil) or (FContent.Count = 0) then
+    Exit;
+
+  Vr := FLayout.VisualRowOf(FCaret.Line, FCaret.Col);
+  if Vr < 0 then
+    Exit;
+
+  Row := FLayout[Vr];
+  FCaretContentX := (FCaret.Col - Row.StartCol) * FCharWidth;
+  FCaretContentY := Vr * FLineHeight;
+  FCaretDirty := False;              // cleared only on a successful map
+end;
+
+procedure TTextControl.PlaceCaret;
+begin
+  // Cheap: content-space pixel -> screen, just subtract the scroll offset.
+  // (If the caret's row is scrolled off-screen, Win32 clips it.)
+  FCaret.MoveTo(FCaretContentX, FCaretContentY - ScrollOffsetY);
+end;
+
+procedure TTextControl.RefreshCaret;
+begin
+  // Recompute the content-space pixel only if stale, then place on screen.
+  if FCaretDirty then
+    RecalcCaretPixel;
+  PlaceCaret;
+end;
+
+procedure TTextControl.EnsureCaretVisible;
+begin
+  if (FLayout = nil) or (FLineHeight <= 0) or (FContent.Count = 0) then
+    Exit;
+  if FCaretDirty then
+    RecalcCaretPixel;
+  if FCaretDirty then
+    Exit;                            // couldn't map the caret yet -> don't scroll
+  ScrollIntoView(FCaretContentY, FCaretContentY + FLineHeight);
+end;
+
+procedure TTextControl.ReconcileCaret;
+begin
+  // Single post-action step: bring into view (may scroll) and place.
+  EnsureCaretVisible;
+  PlaceCaret;
+end;
+
 procedure TTextControl.RefreshView;
 begin
+  // Re-wrap, reposition the caret and repaint after a content change.
   RebuildLayout;
-  UpdateCaretPos;
+  RefreshCaret;
   Invalidate;
 end;
+
+{ ---- goal column for vertical navigation ---- }
 
 function TTextControl.CaretVisualCol: Integer;
 var
@@ -168,31 +252,25 @@ begin
   FGoalCol := CaretVisualCol;
 end;
 
+{ ---- navigation (B): writes via SetCaret, no defensive clamping ---- }
+
 procedure TTextControl.MoveLeft;
 begin
   if FCaret.Col > 0 then
-    FCaret.Col := FCaret.Col - 1
+    SetCaret(FCaret.Line, FCaret.Col - 1)
   else if FCaret.Line > 0 then
-  begin
     // Wrap to the end of the previous logical line.
-    FCaret.Line := FCaret.Line - 1;
-    FCaret.Col := Length(FContent[FCaret.Line]);
-  end;
-  ClampCaret;                        // confines to EditableStart for the console
+    SetCaret(FCaret.Line - 1, Length(FContent[FCaret.Line - 1]));
   SyncGoalCol;
 end;
 
 procedure TTextControl.MoveRight;
 begin
   if FCaret.Col < Length(FContent[FCaret.Line]) then
-    FCaret.Col := FCaret.Col + 1
+    SetCaret(FCaret.Line, FCaret.Col + 1)
   else if FCaret.Line < FContent.Count - 1 then
-  begin
     // Wrap to the start of the next logical line.
-    FCaret.Line := FCaret.Line + 1;
-    FCaret.Col := 0;
-  end;
-  ClampCaret;
+    SetCaret(FCaret.Line + 1, 0);
   SyncGoalCol;
 end;
 
@@ -209,9 +287,8 @@ begin
 
   // Land on the same preferred column in the visual row above.
   Target := FLayout[Vr - 1];
-  FCaret.Line := Target.LogicalLine;
-  FCaret.Col := Target.StartCol + Min(FGoalCol, Target.Length);
-  ClampCaret;                        // note: goal column is intentionally kept
+  SetCaret(Target.LogicalLine, Target.StartCol + Min(FGoalCol, Target.Length));
+  // Note: the goal column is intentionally NOT resynced here.
 end;
 
 procedure TTextControl.MoveDown;
@@ -226,43 +303,37 @@ begin
     Exit;                            // already on the bottom visual row
 
   Target := FLayout[Vr + 1];
-  FCaret.Line := Target.LogicalLine;
-  FCaret.Col := Target.StartCol + Min(FGoalCol, Target.Length);
-  ClampCaret;
+  SetCaret(Target.LogicalLine, Target.StartCol + Min(FGoalCol, Target.Length));
 end;
 
 procedure TTextControl.MoveHome;
 begin
-  FCaret.Col := 0;
-  ClampCaret;                        // console: raised to the prompt boundary
+  SetCaret(FCaret.Line, 0);          // console: clamped up to the prompt boundary
   SyncGoalCol;
 end;
 
 procedure TTextControl.MoveEnd;
 begin
-  FCaret.Col := Length(FContent[FCaret.Line]);
-  ClampCaret;
+  SetCaret(FCaret.Line, Length(FContent[FCaret.Line]));
   SyncGoalCol;
 end;
+
+{ ---- editing (B): writes via SetCaret ---- }
 
 procedure TTextControl.InsertChar(ACh: Char);
 var
   Line: string;
 begin
-  ClampCaret;
-
   Line := FContent[FCaret.Line];
   System.Insert(ACh, Line, FCaret.Col + 1);
   FContent[FCaret.Line] := Line;
-  FCaret.Col := FCaret.Col + 1;
+  SetCaret(FCaret.Line, FCaret.Col + 1);
 end;
 
 procedure TTextControl.NewLine;
 var
   Line, Left, Right: string;
 begin
-  ClampCaret;
-
   Line := FContent[FCaret.Line];
   Left := Copy(Line, 1, FCaret.Col);
   Right := Copy(Line, FCaret.Col + 1, MaxInt);
@@ -270,8 +341,7 @@ begin
   FContent[FCaret.Line] := Left;
   FContent.Insert(FCaret.Line + 1, Right);
 
-  FCaret.Line := FCaret.Line + 1;
-  FCaret.Col := 0;
+  SetCaret(FCaret.Line + 1, 0);
 end;
 
 procedure TTextControl.DeleteBack;
@@ -280,8 +350,6 @@ var
   PrevLen: Integer;
   ES: TPoint;
 begin
-  ClampCaret;
-
   // At or before the editable start there is nothing to delete (and we must not
   // merge across the read-only boundary).
   ES := EditableStart;
@@ -295,7 +363,7 @@ begin
     Line := FContent[FCaret.Line];
     System.Delete(Line, FCaret.Col, 1);
     FContent[FCaret.Line] := Line;
-    FCaret.Col := FCaret.Col - 1;
+    SetCaret(FCaret.Line, FCaret.Col - 1);
   end
   else if FCaret.Line > 0 then
   begin
@@ -303,8 +371,7 @@ begin
     PrevLen := Length(FContent[FCaret.Line - 1]);
     FContent[FCaret.Line - 1] := FContent[FCaret.Line - 1] + FContent[FCaret.Line];
     FContent.Delete(FCaret.Line);
-    FCaret.Line := FCaret.Line - 1;
-    FCaret.Col := PrevLen;
+    SetCaret(FCaret.Line - 1, PrevLen);
   end;
 end;
 
@@ -321,10 +388,9 @@ begin
       InsertChar(Key);
   end;
 
-  RebuildLayout;                     // content changed -> re-wrap
+  RebuildLayout;                     // content changed -> re-wrap (marks caret dirty)
   SyncGoalCol;                       // typing resets the preferred column
-  UpdateCaretPos;
-  EnsureCaretVisible;
+  ReconcileCaret;                    // recompute pixel once, scroll into view, place
   Invalidate;
 end;
 
@@ -344,8 +410,7 @@ begin
   end;
 
   Key := 0;                          // handled
-  UpdateCaretPos;
-  EnsureCaretVisible;
+  ReconcileCaret;                    // recompute pixel once, scroll into view, place
 end;
 
 procedure TTextControl.MouseDown(Button: TMouseButton; Shift: TShiftState;
@@ -399,65 +464,27 @@ begin
 
   // Tell the scroll base how tall the content is now.
   ContentHeight := FLayout.Count * FLineHeight;
-end;
 
-procedure TTextControl.UpdateCaretPos;
-var
-  Vr: Integer;
-  Row: TVisualRow;
-begin
-  if (FLayout = nil) or (FCaret = nil) then
-    Exit;
-
-  if FContent.Count = 0 then
-  begin
-    FCaret.MoveTo(0, 0);
-    Exit;
-  end;
-
-  ClampCaret;
-  Vr := FLayout.VisualRowOf(FCaret.Line, FCaret.Col);
-  if Vr < 0 then
-  begin
-    FCaret.MoveTo(0, 0);
-    Exit;
-  end;
-
-  Row := FLayout[Vr];
-  // Subtract the scroll offset; if the caret's row is scrolled out of view the
-  // resulting position is off the client area and Win32 simply clips it.
-  FCaret.MoveTo((FCaret.Col - Row.StartCol) * FCharWidth,
-    Vr * FLineHeight - ScrollOffsetY);
-end;
-
-procedure TTextControl.EnsureCaretVisible;
-var
-  Vr, CaretTop: Integer;
-begin
-  if (FLayout = nil) or (FLineHeight <= 0) or (FContent.Count = 0) then
-    Exit;
-
-  ClampCaret;
-  Vr := FLayout.VisualRowOf(FCaret.Line, FCaret.Col);
-  if Vr < 0 then
-    Exit;
-
-  CaretTop := Vr * FLineHeight;
-  ScrollIntoView(CaretTop, CaretTop + FLineHeight);
+  // Wrapping changed -> the caret's content-space pixel must be recomputed.
+  FCaretDirty := True;
 end;
 
 procedure TTextControl.CaretChanged(Sender: TObject);
 begin
-  // SetPosition was called. Scroll the new position into view if we already
-  // have a real viewport; otherwise defer until the next Resize (the caret can
-  // be set during FormCreate, before the handle/size exist).
+  // The one external write path (TCaret.SetPosition). Clamp here - this is a
+  // write boundary, so it's consistent with invariant A.
+  ClampCaret;
+  FCaretDirty := True;
+  SyncGoalCol;
+
+  // Scroll the new position into view if we already have a real viewport;
+  // otherwise defer until the next Resize (the caret can be set during
+  // FormCreate, before the handle/size exist).
   if HandleAllocated and (FLineHeight > 0) then
-    EnsureCaretVisible
+    ReconcileCaret
   else
     FCaretFollowPending := True;
 
-  SyncGoalCol;
-  UpdateCaretPos;
   Invalidate;
 end;
 
@@ -467,7 +494,7 @@ begin
     Exit;
   FWordWrap := AValue;
   RebuildLayout;
-  UpdateCaretPos;
+  RefreshCaret;
   Invalidate;
 end;
 
@@ -485,7 +512,7 @@ begin
   inherited DoEnter;
   //MeasureFont;            // refresh metrics + apply the font to the canvas
   FCaret.Show(Handle);
-  UpdateCaretPos;
+  RefreshCaret;
 end;
 
 procedure TTextControl.DoExit;
@@ -516,15 +543,16 @@ begin
     FCaretFollowPending := False;
   end;
 
-  UpdateCaretPos;
+  RefreshCaret;
   Invalidate;
 end;
 
 procedure TTextControl.Scrolled;
 begin
   inherited Scrolled;
-  // Keep the caret pinned to its text position as the view scrolls.
-  UpdateCaretPos;
+  // Scroll changed: re-offset the caret. Cheap - no logical->pixel recompute
+  // (the content-space pixel is unchanged by scrolling).
+  RefreshCaret;
 end;
 
 procedure TTextControl.PaintContent;
@@ -566,8 +594,8 @@ begin
         Copy(FContent[Row.LogicalLine], Row.StartCol + 1, Row.Length));
   end;
 
-  // Reposition and restore the caret.
-  UpdateCaretPos;
+  // Reposition and restore the caret (recomputes pixel only if marked dirty).
+  RefreshCaret;
   FCaret.ResumeAfterPaint;
 end;
 

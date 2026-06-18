@@ -142,9 +142,9 @@ begin
   if not FInputActive then
     Exit;
   Content[LastLineIndex] := FPrompt + AText;
+  RefreshView;                       // re-wrap first, so the caret maps correctly
   // Caret to end of input; SetPosition also scrolls it into view.
   Caret.SetPosition(LastLineIndex, Length(FPrompt) + Length(AText));
-  RefreshView;
 end;
 
 procedure TConsole.Output(const AText: string);
@@ -167,9 +167,9 @@ procedure TConsole.NewPrompt;
 begin
   Content.Add(FPrompt);
   FInputActive := True;
+  RefreshView;                       // re-wrap first, so the caret maps correctly
   // Caret just after the prompt; SetPosition also scrolls it into view.
   Caret.SetPosition(LastLineIndex, Length(FPrompt));
-  RefreshView;
 end;
 
 end.
