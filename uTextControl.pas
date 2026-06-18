@@ -57,6 +57,14 @@ type
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
+
+    // Mouse caret positioning. LogicalFromPoint is the inverse of
+    // RecalcCaretPixel (client pixel -> logical position); PositionCaretFromMouse
+    // applies it. Virtual so subclasses (e.g. TConsole) can refuse clicks that
+    // fall outside their editable region.
+    function LogicalFromPoint(X, Y: Integer): TPoint;
+    procedure PositionCaretFromMouse(X, Y: Integer); virtual;
+
     procedure DoEnter; override;
     procedure DoExit; override;
     procedure FontChanged(Sender: TObject); override;
@@ -416,9 +424,60 @@ end;
 procedure TTextControl.MouseDown(Button: TMouseButton; Shift: TShiftState;
   X, Y: Integer);
 begin
-  inherited MouseDown(Button, Shift, X, Y);
+  inherited MouseDown(Button, Shift, X, Y);   // base may start a scrollbar drag
   if CanFocus then
     SetFocus;
+
+  // Left-click in the content area (not on the reserved scrollbar strip)
+  // repositions the caret.
+  if (Button = mbLeft) and (X < ClientWidth - BarWidth) then
+    PositionCaretFromMouse(X, Y);
+end;
+
+{ ---- mouse caret positioning: inverse of RecalcCaretPixel ---- }
+
+function TTextControl.LogicalFromPoint(X, Y: Integer): TPoint;
+var
+  Vr, Off: Integer;
+  Row: TVisualRow;
+begin
+  // Not measured / nothing to map yet: fall back to the document start.
+  if (FLayout = nil) or (FLineHeight <= 0) or (FContent.Count = 0) then
+    Exit(Point(0, 0));
+
+  // Screen -> content space (inverse of PlaceCaret's offset subtraction),
+  // then content space -> visual row.
+  Vr := (Y + ScrollOffsetY) div FLineHeight;
+  if Vr < 0 then
+    Vr := 0
+  else if Vr > FLayout.Count - 1 then
+    Vr := FLayout.Count - 1;
+
+  Row := FLayout[Vr];
+
+  // Column offset within the row, snapped to the nearest character boundary.
+  if FCharWidth > 0 then
+    Off := (X + FCharWidth div 2) div FCharWidth
+  else
+    Off := 0;
+  if Off < 0 then
+    Off := 0
+  else if Off > Row.Length then
+    Off := Row.Length;
+
+  Result := Point(Row.StartCol + Off, Row.LogicalLine);
+end;
+
+procedure TTextControl.PositionCaretFromMouse(X, Y: Integer);
+var
+  P: TPoint;
+begin
+  P := LogicalFromPoint(X, Y);
+  SetCaret(P.Y, P.X);   // invariant A: the single clamped write
+  SyncGoalCol;          // a click resets the preferred column (like typing)
+  ReconcileCaret;       // recompute pixel once, scroll into view, place
+  // No Invalidate: a click is a caret-only move (content unchanged); if it
+  // scrolls, SetScrollY repaints. Same convention as KeyDown navigation.
 end;
 
 procedure TTextControl.MeasureFont;

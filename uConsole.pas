@@ -34,6 +34,7 @@ type
     procedure NewLine; override;      // Enter -> submit, not a line split
     procedure MoveUp; override;       // Up/Down don't move the caret; they
     procedure MoveDown; override;     // request history navigation instead
+    procedure PositionCaretFromMouse(X, Y: Integer); override;
   public
     constructor Create(AOwner: TComponent); override;
 
@@ -124,6 +125,22 @@ procedure TConsole.MoveDown;
 begin
   if Assigned(FOnHistory) then
     FOnHistory(Self, False);         // next (newer) entry
+end;
+
+procedure TConsole.PositionCaretFromMouse(X, Y: Integer);
+var
+  P, ES: TPoint;
+begin
+  P := LogicalFromPoint(X, Y);
+  ES := EditableStart;
+
+  // Click in the read-only region (scrollback history, or the prompt prefix):
+  // leave the caret exactly where it is. This is the inverse of the read-only
+  // test in ClampCaret/DeleteBack.
+  if (P.Y < ES.Y) or ((P.Y = ES.Y) and (P.X < ES.X)) then
+    Exit;
+
+  inherited PositionCaretFromMouse(X, Y);   // inside the input: reposition
 end;
 
 function TConsole.CurrentInput: string;

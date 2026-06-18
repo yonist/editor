@@ -66,6 +66,7 @@ begin
   FEditor := TCodeEditor.Create(Self);
   FEditor.Parent := FTopPanel;
   FEditor.Align := alClient;
+  FEditor.WordWrap:= true;
 
   FConsole := TConsole.Create(Self);
   FConsole.Parent := FBottomPanel;
