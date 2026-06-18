@@ -78,6 +78,7 @@ var
   I: Integer;
 begin
   // Some sample text so we can see it painting.
+
   FEditor.Content.Add('program Hello;');
   FEditor.Content.Add('begin');
   FEditor.Content.Add('  WriteLn(''Hello, world!'');');

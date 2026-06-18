@@ -31,6 +31,7 @@ type
     FWordWrap: Boolean;
     FCharWidth: Integer;     // monospace cell width, px (cached)
     FLineHeight: Integer;    // row height, px (cached)
+    FLeftMargin: Integer;    // left inset before column 0, px
     FCaretFollowPending: Boolean;  // SetPosition requested before viewport was ready
     FGoalCol: Integer;             // preferred visual column for vertical navigation
     FCaretContentX: Integer;       // caret pixel in content space (cached)
@@ -54,6 +55,7 @@ type
     procedure RebuildLayout;
     procedure CaretChanged(Sender: TObject);
     procedure SetWordWrap(AValue: Boolean);
+    procedure SetLeftMargin(AValue: Integer);
     procedure ClearSelection;
     procedure CopySelection;
     function SelectedText: string;
@@ -109,6 +111,7 @@ type
     property Content: TContent read FContent;
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
+    property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
   end;
 
 implementation
@@ -125,12 +128,13 @@ begin
   FCaret.OnChange := CaretChanged;   // SetPosition must keep the caret in view
   FSelection := TSelection.Create;
   FWordWrap := True;
+  FLeftMargin := 4;
   FCaretDirty := True;
 
   // Only monospace fonts are supported.
   Font.BeginUpdate;
   Font.Name := 'Courier New';
-  Font.Size := 10;
+  Font.Size := 18;
   Font.EndUpdate;
 
   Color := clWhite;
@@ -207,7 +211,7 @@ begin
     Exit;
 
   Row := FLayout[Vr];
-  FCaretContentX := (FCaret.Col - Row.StartCol) * FCharWidth;
+  FCaretContentX := FLeftMargin + (FCaret.Col - Row.StartCol) * FCharWidth;
   FCaretContentY := Vr * FLineHeight;
   FCaretDirty := False;              // cleared only on a successful map
 end;
@@ -581,8 +585,10 @@ begin
   Row := FLayout[Vr];
 
   // Column offset within the row, snapped to the nearest character boundary.
+  // Subtract the left margin first (the clamp below maps a click in the margin
+  // gutter to column 0).
   if FCharWidth > 0 then
-    Off := (X + FCharWidth div 2) div FCharWidth
+    Off := (X - FLeftMargin + FCharWidth div 2) div FCharWidth
   else
     Off := 0;
   if Off < 0 then
@@ -639,7 +645,8 @@ var
   Cols: Integer;
 begin
   if FCharWidth > 0 then
-    Cols := Max(1, ViewportWidth div FCharWidth)
+    // The left margin steals columns from the text area.
+    Cols := Max(1, (ViewportWidth - FLeftMargin) div FCharWidth)
   else
     Cols := 1;
 
@@ -679,6 +686,18 @@ begin
   FWordWrap := AValue;
   RebuildLayout;
   RefreshCaret;
+  Invalidate;
+end;
+
+procedure TTextControl.SetLeftMargin(AValue: Integer);
+begin
+  if AValue < 0 then
+    AValue := 0;
+  if FLeftMargin = AValue then
+    Exit;
+  FLeftMargin := AValue;
+  RebuildLayout;        // the margin changes the wrap width
+  RefreshCaret;         // and the caret's content-space pixel
   Invalidate;
 end;
 
@@ -792,13 +811,13 @@ begin
       begin
         Canvas.Brush.Style := bsSolid;
         Canvas.Brush.Color := clHighlight;
-        Canvas.FillRect(Rect((C0 - Row.StartCol) * FCharWidth, Yp,
-                             (C1 - Row.StartCol) * FCharWidth, Yp + FLineHeight));
+        Canvas.FillRect(Rect(FLeftMargin + (C0 - Row.StartCol) * FCharWidth, Yp,
+                             FLeftMargin + (C1 - Row.StartCol) * FCharWidth, Yp + FLineHeight));
         Canvas.Brush.Style := bsClear;
       end;
     end;
 
-    Canvas.TextOut(0, Yp, Copy(LineText, Row.StartCol + 1, Row.Length));
+    Canvas.TextOut(FLeftMargin, Yp, Copy(LineText, Row.StartCol + 1, Row.Length));
   end;
 
   // Reposition and restore the caret (recomputes pixel only if marked dirty).
