@@ -5,8 +5,8 @@ unit uTextControl;
 interface
 
 uses
-  Classes, SysUtils, Types, Controls, Graphics, Math, LCLType,
-  uScrollControl, uContent, uCaret, uLayout;
+  Classes, SysUtils, Types, Controls, Graphics, Math, LCLType, Clipbrd,
+  uScrollControl, uContent, uCaret, uLayout, uSelection;
 
 type
   { TTextControl
@@ -36,6 +36,11 @@ type
     FCaretContentX: Integer;       // caret pixel in content space (cached)
     FCaretContentY: Integer;
     FCaretDirty: Boolean;          // cached content-space pixel is stale
+    FSelection: TSelection;        // mouse text selection (independent of caret)
+    FSelecting: Boolean;           // a content drag-select is in progress
+    FPendingClick: Boolean;        // mouse down in content, click-vs-drag undecided
+    FMouseDownPt: TPoint;          // client px where the gesture began
+    FSelAnchorPt: TPoint;          // logical (Col,Line) anchor captured at mouse down
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
@@ -49,6 +54,9 @@ type
     procedure RebuildLayout;
     procedure CaretChanged(Sender: TObject);
     procedure SetWordWrap(AValue: Boolean);
+    procedure ClearSelection;
+    procedure CopySelection;
+    function SelectedText: string;
   protected
     procedure PaintContent; override;
     procedure Scrolled; override;
@@ -56,6 +64,9 @@ type
     procedure KeyPress(var Key: Char); override;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
+      X, Y: Integer); override;
+    procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseUp(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
 
     // Mouse caret positioning. LogicalFromPoint is the inverse of
@@ -102,6 +113,9 @@ type
 
 implementation
 
+const
+  SelectThreshold = 3;   // px the mouse must move before a click becomes a drag
+
 constructor TTextControl.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
@@ -109,6 +123,7 @@ begin
   FLayout := TLayout.Create(FContent);
   FCaret := TCaret.Create;
   FCaret.OnChange := CaretChanged;   // SetPosition must keep the caret in view
+  FSelection := TSelection.Create;
   FWordWrap := True;
   FCaretDirty := True;
 
@@ -124,6 +139,7 @@ end;
 
 destructor TTextControl.Destroy;
 begin
+  FSelection.Free;
   FCaret.Free;
   FLayout.Free;
   FContent.Free;
@@ -235,6 +251,47 @@ begin
   RebuildLayout;
   RefreshCaret;
   Invalidate;
+end;
+
+{ ---- selection + clipboard ---- }
+
+procedure TTextControl.ClearSelection;
+begin
+  // It's safe because Invalidate is asynchronous — it doesn't paint, it just flags the control dirty so Windows posts a WM_PAINT later.
+  // By the time PaintContent actually runs, FSelection.Clear has already
+  if not FSelection.IsEmpty then
+    Invalidate;          // a highlight was showing -> repaint to erase it
+  FSelection.Clear;
+end;
+
+function TTextControl.SelectedText: string;
+var
+  SLine, SCol, ELine, ECol, i: Integer;
+begin
+  Result := '';
+  if FSelection.IsEmpty then
+    Exit;
+  FSelection.GetRange(SLine, SCol, ELine, ECol);
+
+  if SLine = ELine then
+  begin
+    Result := Copy(FContent[SLine], SCol + 1, ECol - SCol);
+    Exit;
+  end;
+
+  // First line from SCol to its end, whole interior lines, last line up to ECol.
+  Result := Copy(FContent[SLine], SCol + 1, MaxInt);
+  for i := SLine + 1 to ELine - 1 do
+    Result := Result + LineEnding + FContent[i];
+  Result := Result + LineEnding + Copy(FContent[ELine], 1, ECol);
+end;
+
+procedure TTextControl.CopySelection;
+begin
+  if FSelection.IsEmpty then
+    Exit;
+  Clipboard.AsText := SelectedText;
+  ClearSelection;        // copy consumes the selection (and repaints)
 end;
 
 { ---- goal column for vertical navigation ---- }
@@ -396,6 +453,7 @@ begin
       InsertChar(Key);
   end;
 
+  FSelection.Clear;                  // L1: an edit clears the selection
   RebuildLayout;                     // content changed -> re-wrap (marks caret dirty)
   SyncGoalCol;                       // typing resets the preferred column
   ReconcileCaret;                    // recompute pixel once, scroll into view, place
@@ -405,6 +463,15 @@ end;
 procedure TTextControl.KeyDown(var Key: Word; Shift: TShiftState);
 begin
   inherited KeyDown(Key, Shift);
+
+  // Ctrl+C: copy the selection. Read-only and caret-independent, so it runs
+  // before (and instead of) the navigation handling below.
+  if (ssCtrl in Shift) and (Key = Ord('C')) then
+  begin
+    CopySelection;
+    Key := 0;                        // handled (also suppresses the #3 KeyPress)
+    Exit;
+  end;
 
   case Key of
     VK_LEFT:  MoveLeft;
@@ -418,6 +485,7 @@ begin
   end;
 
   Key := 0;                          // handled
+  ClearSelection;                    // L1: keyboard navigation clears the selection
   ReconcileCaret;                    // recompute pixel once, scroll into view, place
 end;
 
@@ -428,10 +496,67 @@ begin
   if CanFocus then
     SetFocus;
 
-  // Left-click in the content area (not on the reserved scrollbar strip)
-  // repositions the caret.
+  // Begin a gesture in the content area (not on the reserved scrollbar strip).
+  // We can't yet tell a click from a drag, so defer the caret move to MouseUp
+  // (a drag selects and must NOT move the caret - invariant of this feature).
   if (Button = mbLeft) and (X < ClientWidth - BarWidth) then
-    PositionCaretFromMouse(X, Y);
+  begin
+    FMouseDownPt := Point(X, Y);
+    FSelAnchorPt := LogicalFromPoint(X, Y);   // logical (Col,Line) anchor
+    FPendingClick := True;
+    FSelecting := False;
+    ClearSelection;                  // starting a new gesture drops the old one
+  end;
+end;
+
+procedure TTextControl.MouseMove(Shift: TShiftState; X, Y: Integer);
+var
+  P: TPoint;
+begin
+  inherited MouseMove(Shift, X, Y);  // base handles the scrollbar thumb drag
+
+  if (not (ssLeft in Shift)) or (not (FPendingClick or FSelecting)) then
+    Exit;
+
+  // Promote a pending click to a drag-select once it passes the threshold.
+  if FPendingClick and
+     (Abs(X - FMouseDownPt.X) + Abs(Y - FMouseDownPt.Y) >= SelectThreshold) then
+  begin
+    FPendingClick := False;
+    FSelecting := True;
+    FSelection.SetAnchor(FSelAnchorPt.Y, FSelAnchorPt.X);
+  end;
+
+  if FSelecting then
+  begin
+    P := LogicalFromPoint(X, Y);
+    FSelection.ExtendTo(P.Y, P.X);
+    Invalidate;                      // redraw the highlight; caret untouched
+  end;
+end;
+
+procedure TTextControl.MouseUp(Button: TMouseButton; Shift: TShiftState;
+  X, Y: Integer);
+begin
+  inherited MouseUp(Button, Shift, X, Y);
+  if Button <> mbLeft then
+    Exit;
+
+  if FSelecting then
+  begin
+    FSelecting := False;
+    // A drag that collapsed back to a point is treated as a plain click.
+    if FSelection.IsEmpty then
+    begin
+      FSelection.Clear;
+      PositionCaretFromMouse(X, Y);
+    end;
+    // Otherwise keep the selection (already painted); the caret stays put.
+  end
+  else if FPendingClick then
+    PositionCaretFromMouse(X, Y);    // no drag occurred -> reposition the caret
+
+  FPendingClick := False;
 end;
 
 { ---- mouse caret positioning: inverse of RecalcCaretPixel ---- }
@@ -618,6 +743,8 @@ procedure TTextControl.PaintContent;
 var
   i, First, Last: Integer;
   Row: TVisualRow;
+  LineText: string;
+  Yp, C0, C1: Integer;
 begin
   // Hide the system caret while we draw over the client area.
   FCaret.SuspendForPaint;
@@ -648,9 +775,30 @@ begin
   for i := First to Last do
   begin
     Row := FLayout[i];
-    if Row.LogicalLine < FContent.Count then
-      Canvas.TextOut(0, i * FLineHeight - ScrollOffsetY,
-        Copy(FContent[Row.LogicalLine], Row.StartCol + 1, Row.Length));
+    if Row.LogicalLine >= FContent.Count then
+      Continue;
+
+    LineText := FContent[Row.LogicalLine];
+    Yp := i * FLineHeight - ScrollOffsetY;
+
+    // Selection band (C1): fill the selected cells on this visual row, then
+    // draw the (transparent-brush) text over the band in the default colour.
+    if (not FSelection.IsEmpty) and FSelection.RangeOnLine(Row.LogicalLine, Length(LineText), C0, C1) then
+    begin
+      // Intersect the line's selected span with this visual row's slice.
+      if C0 < Row.StartCol then C0 := Row.StartCol;
+      if C1 > Row.StartCol + Row.Length then C1 := Row.StartCol + Row.Length;
+      if C1 > C0 then
+      begin
+        Canvas.Brush.Style := bsSolid;
+        Canvas.Brush.Color := clHighlight;
+        Canvas.FillRect(Rect((C0 - Row.StartCol) * FCharWidth, Yp,
+                             (C1 - Row.StartCol) * FCharWidth, Yp + FLineHeight));
+        Canvas.Brush.Style := bsClear;
+      end;
+    end;
+
+    Canvas.TextOut(0, Yp, Copy(LineText, Row.StartCol + 1, Row.Length));
   end;
 
   // Reposition and restore the caret (recomputes pixel only if marked dirty).
