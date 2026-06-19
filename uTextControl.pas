@@ -56,9 +56,9 @@ type
     procedure CaretChanged(Sender: TObject);
     procedure SetWordWrap(AValue: Boolean);
     procedure SetLeftMargin(AValue: Integer);
-    procedure ClearSelection;
     procedure CopySelection;
     function SelectedText: string;
+    procedure SelectAll;
   protected
     procedure PaintContent; override;
     procedure Scrolled; override;
@@ -109,6 +109,10 @@ type
     procedure MoveDown; virtual;
     procedure MoveHome; virtual;
     procedure MoveEnd; virtual;
+
+    // Drop the selection (repaints if one was showing). Protected so subclasses
+    // can clear it - e.g. the console clears it inside its history Up/Down.
+    procedure ClearSelection;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -268,9 +272,10 @@ procedure TTextControl.ClearSelection;
 begin
   // It's safe because Invalidate is asynchronous — it doesn't paint, it just flags the control dirty so Windows posts a WM_PAINT later.
   // By the time PaintContent actually runs, FSelection.Clear has already
-  if not FSelection.IsEmpty then
+  if not FSelection.IsEmpty then begin
     Invalidate;          // a highlight was showing -> repaint to erase it
-  FSelection.Clear;
+    FSelection.Clear;
+  end;
 end;
 
 function TTextControl.SelectedText: string;
@@ -301,6 +306,24 @@ begin
     Exit;
   Clipboard.AsText := SelectedText;
   ClearSelection;        // copy consumes the selection (and repaints)
+end;
+
+procedure TTextControl.SelectAll;
+var
+  ES: TPoint;
+  LastIdx: Integer;
+begin
+  if FContent.Count = 0 then
+    Exit;
+
+  // Anchor at the first editable position, extend to the end of the last line.
+  // For the console EditableStart is the prompt boundary, so this naturally
+  // selects only the input line (and selects nothing when input is inactive).
+  ES := EditableStart;
+  LastIdx := FContent.Count - 1;
+  FSelection.SetAnchor(ES.Y, ES.X);
+  FSelection.ExtendTo(LastIdx, Length(FContent[LastIdx]));
+  Invalidate;            // show the highlight (the caret is left where it is)
 end;
 
 { ---- goal column for vertical navigation ---- }
@@ -470,6 +493,9 @@ begin
 end;
 
 procedure TTextControl.KeyDown(var Key: Word; Shift: TShiftState);
+var
+  Selecting, IsNav: Boolean;
+  SLine, SCol, ELine, ECol: Integer;
 begin
   inherited KeyDown(Key, Shift);
 
@@ -482,6 +508,46 @@ begin
     Exit;
   end;
 
+  // Ctrl+A: select all editable text. Caret-independent (the selection model is
+  // separate from the caret), so it runs before navigation too.
+  if (ssCtrl in Shift) and (Key = Ord('A')) then
+  begin
+    SelectAll;
+    Key := 0;                        // handled (also suppresses the #1 KeyPress)
+    Exit;
+  end;
+
+  IsNav := (Key = VK_LEFT) or (Key = VK_RIGHT) or (Key = VK_UP) or
+           (Key = VK_DOWN) or (Key = VK_HOME) or (Key = VK_END);
+  if not IsNav then
+    Exit;                            // not a navigation key; leave Key untouched
+
+  Selecting := ssShift in Shift;
+
+  // Plain Left/Right with a live selection collapses the caret onto the
+  // selection boundary (standard editor feel) instead of moving one character.
+  if (not Selecting) and (not FSelection.IsEmpty) and
+     ((Key = VK_LEFT) or (Key = VK_RIGHT)) then
+  begin
+    FSelection.GetRange(SLine, SCol, ELine, ECol);
+    if Key = VK_LEFT then
+      SetCaret(SLine, SCol)
+    else
+      SetCaret(ELine, ECol);
+    ClearSelection;
+    SyncGoalCol;
+    Key := 0;
+    ReconcileCaret;
+    Exit;
+  end;
+
+  // Anchor the selection at the (pre-move) caret on the first Shift+navigation
+  // keystroke. Subclasses whose move is not caret navigation (the console maps
+  // Up/Down to history) clear the selection inside the Move call below, which
+  // makes the ExtendTo afterwards a harmless no-op - no special-casing here.
+  if Selecting and FSelection.IsEmpty then
+    FSelection.SetAnchor(FCaret.Line, FCaret.Col);
+
   case Key of
     VK_LEFT:  MoveLeft;
     VK_RIGHT: MoveRight;
@@ -489,12 +555,17 @@ begin
     VK_DOWN:  MoveDown;
     VK_HOME:  MoveHome;
     VK_END:   MoveEnd;
-  else
-    Exit;                            // not a navigation key; leave Key untouched
   end;
-
   Key := 0;                          // handled
-  ClearSelection;                    // L1: keyboard navigation clears the selection
+
+  if Selecting then
+  begin
+    FSelection.ExtendTo(FCaret.Line, FCaret.Col);  // active end follows the caret
+    Invalidate;                      // the selection band may have changed
+  end
+  else
+    ClearSelection;                  // plain navigation collapses any selection
+
   ReconcileCaret;                    // recompute pixel once, scroll into view, place
 end;
 

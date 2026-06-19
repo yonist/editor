@@ -117,12 +117,17 @@ end;
 
 procedure TConsole.MoveUp;
 begin
+  // Up/Down are history recall, not caret navigation. Clearing the selection
+  // here makes the base's post-move ExtendTo a no-op, so Shift+Up/Down never
+  // start a selection.
+  ClearSelection;
   if Assigned(FOnHistory) then
     FOnHistory(Self, True);          // previous (older) entry
 end;
 
 procedure TConsole.MoveDown;
 begin
+  ClearSelection;
   if Assigned(FOnHistory) then
     FOnHistory(Self, False);         // next (newer) entry
 end;
