@@ -59,6 +59,9 @@ type
     procedure CopySelection;
     function SelectedText: string;
     procedure SelectAll;
+    function SelectionIsReadOnly: Boolean;
+    procedure DeleteSelection;
+    function ConsumeSelectionForEdit: Boolean;
   protected
     procedure PaintContent; override;
     procedure Scrolled; override;
@@ -417,10 +420,77 @@ end;
 
 { ---- editing (B): writes via SetCaret ---- }
 
+function TTextControl.SelectionIsReadOnly: Boolean;
+var
+  SLine, SCol, ELine, ECol: Integer;
+  ES: TPoint;
+begin
+  Result := False;
+  if FSelection.IsEmpty then
+    Exit;
+  FSelection.GetRange(SLine, SCol, ELine, ECol);
+  ES := EditableStart;
+  // The selection begins before the editable region (e.g. console scrollback).
+  Result := (SLine < ES.Y) or ((SLine = ES.Y) and (SCol < ES.X));
+end;
+
+procedure TTextControl.DeleteSelection;
+var
+  SLine, SCol, ELine, ECol, i: Integer;
+  Line, Head, Tail: string;
+begin
+  if FSelection.IsEmpty then
+    Exit;
+  FSelection.GetRange(SLine, SCol, ELine, ECol);
+
+  if SLine = ELine then
+  begin
+    // Single line: cut out the span [SCol, ECol).
+    Line := FContent[SLine];
+    System.Delete(Line, SCol + 1, ECol - SCol);
+    FContent[SLine] := Line;
+  end
+  else
+  begin
+    // Multi-line: keep the head of the first line and the tail of the last,
+    // and drop every line in between.
+    Head := Copy(FContent[SLine], 1, SCol);
+    Tail := Copy(FContent[ELine], ECol + 1, MaxInt);
+    for i := ELine downto SLine + 1 do
+      FContent.Delete(i);
+    FContent[SLine] := Head + Tail;
+  end;
+
+  ClearSelection;
+  SetCaret(SLine, SCol);   // caret collapses to the start of the removed range
+end;
+
+function TTextControl.ConsumeSelectionForEdit: Boolean;
+begin
+  // Resolve the selection before a content edit. Returns whether the caller may
+  // proceed to edit at the caret:
+  //   - no selection      -> nothing removed, proceed.
+  //   - editable selection -> remove it (caret collapses to its start), proceed.
+  //   - read-only selection -> drop it and return False (abort the edit).
+  Result := True;
+  if FSelection.IsEmpty then
+    Exit;
+  if SelectionIsReadOnly then
+  begin
+    ClearSelection;
+    Result := False;
+  end
+  else
+    DeleteSelection;
+end;
+
 procedure TTextControl.InsertChar(ACh: Char);
 var
   Line: string;
 begin
+  if not ConsumeSelectionForEdit then
+    Exit;                            // selection touched read-only -> ignore key
+
   Line := FContent[FCaret.Line];
   System.Insert(ACh, Line, FCaret.Col + 1);
   FContent[FCaret.Line] := Line;
@@ -431,6 +501,9 @@ procedure TTextControl.NewLine;
 var
   Line, Left, Right: string;
 begin
+  if not ConsumeSelectionForEdit then
+    Exit;                            // selection touched read-only -> ignore key
+
   Line := FContent[FCaret.Line];
   Left := Copy(Line, 1, FCaret.Col);
   Right := Copy(Line, FCaret.Col + 1, MaxInt);
@@ -447,6 +520,14 @@ var
   PrevLen: Integer;
   ES: TPoint;
 begin
+  // With a selection, Backspace deletes the selection itself (or, if it touches
+  // read-only content, just drops it) - never a neighbouring character.
+  if not FSelection.IsEmpty then
+  begin
+    ConsumeSelectionForEdit;
+    Exit;
+  end;
+
   // At or before the editable start there is nothing to delete (and we must not
   // merge across the read-only boundary).
   ES := EditableStart;
