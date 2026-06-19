@@ -75,7 +75,12 @@ type
     // RecalcCaretPixel (client pixel -> logical position); PositionCaretFromMouse
     // applies it. Virtual so subclasses (e.g. TConsole) can refuse clicks that
     // fall outside their editable region.
-    function LogicalFromPoint(X, Y: Integer): TPoint;
+    // SnapToNearest rounds X to the closest character boundary (correct for
+    // placing the caret on a click). Pass False to snap down to the character
+    // actually under the cursor (correct for a selection anchor: a drag must
+    // start from the clicked letter, not its right-hand neighbour).
+    function LogicalFromPoint(X, Y: Integer;
+      SnapToNearest: Boolean = True): TPoint;
     procedure PositionCaretFromMouse(X, Y: Integer); virtual;
 
     procedure DoEnter; override;
@@ -506,7 +511,9 @@ begin
   if (Button = mbLeft) and (X < ClientWidth - BarWidth) then
   begin
     FMouseDownPt := Point(X, Y);
-    FSelAnchorPt := LogicalFromPoint(X, Y);   // logical (Col,Line) anchor
+    // Anchor on the letter under the cursor (floor), so a drag selects starting
+    // from the clicked character rather than rounding to its neighbour.
+    FSelAnchorPt := LogicalFromPoint(X, Y, False);   // logical (Col,Line) anchor
     FPendingClick := True;
     FSelecting := False;
     ClearSelection;                  // starting a new gesture drops the old one
@@ -565,7 +572,8 @@ end;
 
 { ---- mouse caret positioning: inverse of RecalcCaretPixel ---- }
 
-function TTextControl.LogicalFromPoint(X, Y: Integer): TPoint;
+function TTextControl.LogicalFromPoint(X, Y: Integer;
+  SnapToNearest: Boolean): TPoint;
 var
   Vr, Off: Integer;
   Row: TVisualRow;
@@ -584,11 +592,17 @@ begin
 
   Row := FLayout[Vr];
 
-  // Column offset within the row, snapped to the nearest character boundary.
-  // Subtract the left margin first (the clamp below maps a click in the margin
-  // gutter to column 0).
+  // Column offset within the row. Subtract the left margin first (the clamp
+  // below maps a click in the margin gutter to column 0). SnapToNearest rounds
+  // to the closest boundary (caret placement); otherwise we floor to the
+  // character under the cursor (selection anchor).
   if FCharWidth > 0 then
-    Off := (X - FLeftMargin + FCharWidth div 2) div FCharWidth
+  begin
+    if SnapToNearest then
+      Off := (X - FLeftMargin + FCharWidth div 2) div FCharWidth
+    else
+      Off := (X - FLeftMargin) div FCharWidth;
+  end
   else
     Off := 0;
   if Off < 0 then
