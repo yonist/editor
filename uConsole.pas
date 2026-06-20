@@ -31,6 +31,7 @@ type
     function EditableStart: TPoint; override;
     procedure InsertChar(ACh: Char); override;
     procedure DeleteBack; override;
+    procedure DeleteForward; override;
     procedure NewLine; override;      // Enter -> submit, not a line split
     procedure MoveUp; override;       // Up/Down don't move the caret; they
     procedure MoveDown; override;     // request history navigation instead
@@ -99,6 +100,13 @@ begin
   if not FInputActive then
     Exit;
   inherited DeleteBack;               // base stops at the prompt boundary
+end;
+
+procedure TConsole.DeleteForward;
+begin
+  if not FInputActive then
+    Exit;
+  inherited DeleteForward;            // confined to the input line by the caret
 end;
 
 procedure TConsole.NewLine;

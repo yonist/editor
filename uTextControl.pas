@@ -96,6 +96,7 @@ type
     procedure InsertChar(ACh: Char); virtual;
     procedure NewLine; virtual;
     procedure DeleteBack; virtual;
+    procedure DeleteForward; virtual;
 
     // First editable position; everything before it is read-only. Default is
     // (0,0) - the whole document is editable. (X = column, Y = line.)
@@ -553,20 +554,47 @@ begin
   end;
 end;
 
+procedure TTextControl.DeleteForward;
+var
+  Line: string;
+begin
+  // With a selection, Delete removes the selection itself (or, if it touches
+  // read-only content, just drops it) - never a neighbouring character.
+  if not FSelection.IsEmpty then
+  begin
+    ConsumeSelectionForEdit;
+    Exit;
+  end;
+
+  Line := FContent[FCaret.Line];
+  if FCaret.Col < Length(Line) then
+  begin
+    // Remove the character immediately right of the caret (caret stays put).
+    System.Delete(Line, FCaret.Col + 1, 1);
+    FContent[FCaret.Line] := Line;
+    SetCaret(FCaret.Line, FCaret.Col);   // re-clamp + mark the pixel dirty
+  end
+  else if FCaret.Line < FContent.Count - 1 then
+  begin
+    // At end of line: pull the next line up onto this one.
+    FContent[FCaret.Line] := Line + FContent[FCaret.Line + 1];
+    FContent.Delete(FCaret.Line + 1);
+    SetCaret(FCaret.Line, FCaret.Col);   // caret stays at the join point
+  end;
+end;
+
 procedure TTextControl.KeyPress(var Key: Char);
 begin
   inherited KeyPress(Key);
 
-  case Key of
-    #8:  DeleteBack;                 // Backspace
-    #13: NewLine;                    // Return
-    #9:  ;                           // ignore Tab for now
-  else
-    if Key >= ' ' then               // any printable char incl. space (#32)
-      InsertChar(Key);
-  end;
+  // Text input only. Editing commands (Backspace, Enter, Delete) and navigation
+  // are handled in KeyDown; any control character that still reaches here is
+  // ignored. InsertChar consumes the selection, so no explicit clear is needed.
+  if Key < ' ' then
+    Exit;
 
-  FSelection.Clear;                  // L1: an edit clears the selection
+  InsertChar(Key);                   // any printable char incl. space (#32)
+
   RebuildLayout;                     // content changed -> re-wrap (marks caret dirty)
   SyncGoalCol;                       // typing resets the preferred column
   ReconcileCaret;                    // recompute pixel once, scroll into view, place
@@ -575,7 +603,7 @@ end;
 
 procedure TTextControl.KeyDown(var Key: Word; Shift: TShiftState);
 var
-  Selecting, IsNav: Boolean;
+  Selecting, IsNav, IsEditKey: Boolean;
   SLine, SCol, ELine, ECol: Integer;
 begin
   inherited KeyDown(Key, Shift);
@@ -595,6 +623,29 @@ begin
   begin
     SelectAll;
     Key := 0;                        // handled (also suppresses the #1 KeyPress)
+    Exit;
+  end;
+
+  // Editing commands all live here so they're in one place. Backspace and Enter
+  // also arrive as control characters in KeyPress, but setting Key := 0
+  // suppresses that follow-up - and KeyPress ignores control characters anyway,
+  // so a widgetset that still delivers it does no harm.
+  IsEditKey := true;
+  case Key of
+    VK_BACK:   DeleteBack;
+    VK_DELETE: DeleteForward;
+    VK_RETURN: NewLine;
+    else begin
+      IsEditKey:= false;
+    end;
+  end;
+
+  if IsEditKey then begin
+    Key := 0;
+    RebuildLayout;                   // content changed -> re-wrap
+    SyncGoalCol;
+    ReconcileCaret;                  // recompute pixel once, scroll into view, place
+    Invalidate;
     Exit;
   end;
 
