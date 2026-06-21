@@ -118,6 +118,7 @@ begin
 
   Cmd := CurrentInput;
   FInputActive := False;              // lock input; the host shows the next prompt
+  ResetUndo;                          // the submitted line is now immutable history
 
   if Assigned(FOnCommand) then
     FOnCommand(Self, Cmd);
@@ -172,6 +173,7 @@ begin
   if not FInputActive then
     Exit;
   Content[LastLineIndex] := FPrompt + AText;
+  ResetUndo;                         // a recalled line is a fresh, non-recorded state
   RefreshView;                       // re-wrap first, so the caret maps correctly
   // Caret to end of input; SetPosition also scrolls it into view.
   Caret.SetPosition(LastLineIndex, Length(FPrompt) + Length(AText));
@@ -197,6 +199,7 @@ procedure TConsole.NewPrompt;
 begin
   Content.Add(FPrompt);
   FInputActive := True;
+  ResetUndo;                         // undo is scoped to the current input line
   RefreshView;                       // re-wrap first, so the caret maps correctly
   // Caret just after the prompt; SetPosition also scrolls it into view.
   Caret.SetPosition(LastLineIndex, Length(FPrompt));

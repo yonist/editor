@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Types, Controls, Graphics, Math, LCLType, Clipbrd,
-  uScrollControl, uContent, uCaret, uLayout, uSelection;
+  uScrollControl, uContent, uCaret, uLayout, uSelection, uUndo;
 
 type
   { TTextControl
@@ -42,6 +42,7 @@ type
     FPendingClick: Boolean;        // mouse down in content, click-vs-drag undecided
     FMouseDownPt: TPoint;          // client px where the gesture began
     FSelAnchorPt: TPoint;          // logical (Col,Line) anchor captured at mouse down
+    FUndoMgr: TUndoManager;        // undo/redo stacks
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
@@ -60,8 +61,16 @@ type
     function SelectedText: string;
     procedure SelectAll;
     function SelectionIsReadOnly: Boolean;
-    procedure DeleteSelection;
-    function ConsumeSelectionForEdit: Boolean;
+    function ResolveEditPoint(out AStartLine, AOldCount, ACol: Integer;
+      out AHead, ATail: string): Boolean;
+    procedure DeleteSelectionEdit;
+    procedure SwapLines(AFirstLine, ARemoveCount: Integer;
+      const ANew: array of string);
+    procedure ReplaceLines(AFirstLine, AOldCount: Integer;
+      const ANew: array of string; ACaretAfter: TPoint);
+    function ApplyRecord(const ARec: TUndoRecord): TUndoRecord;
+    function CaptureSelection: TUndoSel;
+    procedure RestoreSelection(const ASel: TUndoSel);
   protected
     procedure PaintContent; override;
     procedure Scrolled; override;
@@ -117,9 +126,15 @@ type
     // Drop the selection (repaints if one was showing). Protected so subclasses
     // can clear it - e.g. the console clears it inside its history Up/Down.
     procedure ClearSelection;
+
+    // Clear the undo/redo stacks. The console resets per input line.
+    procedure ResetUndo;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
+
+    procedure Undo;
+    procedure Redo;
 
     property Content: TContent read FContent;
     property Caret: TCaret read FCaret;
@@ -140,6 +155,7 @@ begin
   FCaret := TCaret.Create;
   FCaret.OnChange := CaretChanged;   // SetPosition must keep the caret in view
   FSelection := TSelection.Create;
+  FUndoMgr := TUndoManager.Create;
   FWordWrap := True;
   FLeftMargin := 4;
   FCaretDirty := True;
@@ -156,6 +172,7 @@ end;
 
 destructor TTextControl.Destroy;
 begin
+  FUndoMgr.Free;
   FSelection.Free;
   FCaret.Free;
   FLayout.Free;
@@ -435,102 +452,212 @@ begin
   Result := (SLine < ES.Y) or ((SLine = ES.Y) and (SCol < ES.X));
 end;
 
-procedure TTextControl.DeleteSelection;
+{ ---- undo/redo: the line-block funnel (every edit goes through ReplaceLines) ---- }
+
+procedure TTextControl.SwapLines(AFirstLine, ARemoveCount: Integer;
+  const ANew: array of string);
 var
-  SLine, SCol, ELine, ECol, i: Integer;
-  Line, Head, Tail: string;
+  i: Integer;
 begin
-  if FSelection.IsEmpty then
-    Exit;
-  FSelection.GetRange(SLine, SCol, ELine, ECol);
-
-  if SLine = ELine then
-  begin
-    // Single line: cut out the span [SCol, ECol).
-    Line := FContent[SLine];
-    System.Delete(Line, SCol + 1, ECol - SCol);
-    FContent[SLine] := Line;
-  end
-  else
-  begin
-    // Multi-line: keep the head of the first line and the tail of the last,
-    // and drop every line in between.
-    Head := Copy(FContent[SLine], 1, SCol);
-    Tail := Copy(FContent[ELine], ECol + 1, MaxInt);
-    for i := ELine downto SLine + 1 do
-      FContent.Delete(i);
-    FContent[SLine] := Head + Tail;
-  end;
-
-  ClearSelection;
-  SetCaret(SLine, SCol);   // caret collapses to the start of the removed range
+  // Mechanical block replace; no recording. Shared by editing and undo/redo.
+  for i := 1 to ARemoveCount do
+    FContent.Delete(AFirstLine);
+  for i := 0 to High(ANew) do
+    FContent.Insert(AFirstLine + i, ANew[i]);
 end;
 
-function TTextControl.ConsumeSelectionForEdit: Boolean;
+function TTextControl.CaptureSelection: TUndoSel;
+var
+  SLine, SCol, ELine, ECol: Integer;
 begin
-  // Resolve the selection before a content edit. Returns whether the caller may
-  // proceed to edit at the caret:
-  //   - no selection      -> nothing removed, proceed.
-  //   - editable selection -> remove it (caret collapses to its start), proceed.
-  //   - read-only selection -> drop it and return False (abort the edit).
-  Result := True;
-  if FSelection.IsEmpty then
-    Exit;
-  if SelectionIsReadOnly then
+  Result.SelStart := Point(0, 0);
+  Result.SelEnd := Point(0, 0);
+  Result.HasSel := not FSelection.IsEmpty;
+  if Result.HasSel then
   begin
-    ClearSelection;
-    Result := False;
+    FSelection.GetRange(SLine, SCol, ELine, ECol);
+    Result.SelStart := Point(SCol, SLine);
+    Result.SelEnd := Point(ECol, ELine);
+  end;
+end;
+
+procedure TTextControl.RestoreSelection(const ASel: TUndoSel);
+begin
+  if ASel.HasSel then
+  begin
+    FSelection.SetAnchor(ASel.SelStart.Y, ASel.SelStart.X);
+    FSelection.ExtendTo(ASel.SelEnd.Y, ASel.SelEnd.X);
   end
   else
-    DeleteSelection;
+    ClearSelection;
+end;
+
+procedure TTextControl.ReplaceLines(AFirstLine, AOldCount: Integer;
+  const ANew: array of string; ACaretAfter: TPoint);
+var
+  Rec: TUndoRecord;
+  i: Integer;
+begin
+  // Record the affected block as it is now (lazy: NewLines is read back at undo).
+  Rec.FirstLine := AFirstLine;
+  SetLength(Rec.Lines, AOldCount);
+  for i := 0 to AOldCount - 1 do
+    Rec.Lines[i] := FContent[AFirstLine + i];
+  Rec.OtherCount := Length(ANew);
+  Rec.CaretTarget := Point(FCaret.Col, FCaret.Line);   // caret before the edit
+  Rec.CaretOther := ACaretAfter;
+  Rec.SelTarget := CaptureSelection;   // pre-edit selection -> restored on undo
+  Rec.SelOther.HasSel := False;        // redo direction is caret-only
+  Rec.SelOther.SelStart := Point(0, 0);
+  Rec.SelOther.SelEnd := Point(0, 0);
+  FUndoMgr.RecordEdit(Rec);
+
+  ClearSelection;              // the edit consumes any selection
+  SwapLines(AFirstLine, AOldCount, ANew);
+  SetCaret(ACaretAfter.Y, ACaretAfter.X);
+end;
+
+function TTextControl.ApplyRecord(const ARec: TUndoRecord): TUndoRecord;
+var
+  i: Integer;
+begin
+  // Capture the block we are about to overwrite -> it becomes the inverse (with
+  // the caret/selection pairs swapped), then swap in this record's block and
+  // restore its caret and selection.
+  Result.FirstLine := ARec.FirstLine;
+  SetLength(Result.Lines, ARec.OtherCount);
+  for i := 0 to ARec.OtherCount - 1 do
+    Result.Lines[i] := FContent[ARec.FirstLine + i];
+  Result.OtherCount := Length(ARec.Lines);
+  Result.CaretTarget := ARec.CaretOther;
+  Result.CaretOther := ARec.CaretTarget;
+  Result.SelTarget := ARec.SelOther;
+  Result.SelOther := ARec.SelTarget;
+
+  SwapLines(ARec.FirstLine, ARec.OtherCount, ARec.Lines);
+  SetCaret(ARec.CaretTarget.Y, ARec.CaretTarget.X);
+  RestoreSelection(ARec.SelTarget);
+end;
+
+procedure TTextControl.Undo;
+var
+  Rec: TUndoRecord;
+begin
+  if not FUndoMgr.PeekUndo(Rec) then
+    Exit;
+  // ApplyRecord restores content, caret AND selection, and returns the inverse
+  // (redo form), which we commit back into the same slot.
+  FUndoMgr.CommitUndo(ApplyRecord(Rec));
+
+  RebuildLayout;
+  SyncGoalCol;
+  ReconcileCaret;
+  Invalidate;
+end;
+
+procedure TTextControl.Redo;
+var
+  Rec: TUndoRecord;
+begin
+  if not FUndoMgr.PeekRedo(Rec) then
+    Exit;
+  FUndoMgr.CommitRedo(ApplyRecord(Rec));
+
+  RebuildLayout;
+  SyncGoalCol;
+  ReconcileCaret;
+  Invalidate;
+end;
+
+procedure TTextControl.ResetUndo;
+begin
+  FUndoMgr.Clear;
+end;
+
+{ ---- selection resolution for the editing primitives ---- }
+
+function TTextControl.ResolveEditPoint(out AStartLine, AOldCount, ACol: Integer;
+  out AHead, ATail: string): Boolean;
+var
+  SLine, SCol, ELine, ECol: Integer;
+begin
+  Result := True;
+  if FSelection.IsEmpty then
+  begin
+    // No selection: edit at the caret on its line.
+    AStartLine := FCaret.Line;
+    AOldCount := 1;
+    AHead := Copy(FContent[AStartLine], 1, FCaret.Col);
+    ATail := Copy(FContent[AStartLine], FCaret.Col + 1, MaxInt);
+    ACol := FCaret.Col;
+  end
+  else if SelectionIsReadOnly then
+  begin
+    ClearSelection;
+    Result := False;             // read-only selection -> caller aborts
+  end
+  else
+  begin
+    // Editable selection: the edit replaces the whole span in one record.
+    // ReplaceLines snapshots and clears the selection.
+    FSelection.GetRange(SLine, SCol, ELine, ECol);
+    AStartLine := SLine;
+    AOldCount := ELine - SLine + 1;
+    AHead := Copy(FContent[SLine], 1, SCol);
+    ATail := Copy(FContent[ELine], ECol + 1, MaxInt);
+    ACol := SCol;
+  end;
+end;
+
+procedure TTextControl.DeleteSelectionEdit;
+var
+  SLine, SCol, ELine, ECol: Integer;
+  Head, Tail: string;
+begin
+  FSelection.GetRange(SLine, SCol, ELine, ECol);
+  Head := Copy(FContent[SLine], 1, SCol);
+  Tail := Copy(FContent[ELine], ECol + 1, MaxInt);
+  ReplaceLines(SLine, ELine - SLine + 1, [Head + Tail], Point(SCol, SLine));
 end;
 
 procedure TTextControl.InsertChar(ACh: Char);
 var
-  Line: string;
+  StartLine, OldCount, Col: Integer;
+  Head, Tail: string;
 begin
-  if not ConsumeSelectionForEdit then
-    Exit;                            // selection touched read-only -> ignore key
-
-  Line := FContent[FCaret.Line];
-  System.Insert(ACh, Line, FCaret.Col + 1);
-  FContent[FCaret.Line] := Line;
-  SetCaret(FCaret.Line, FCaret.Col + 1);
+  if not ResolveEditPoint(StartLine, OldCount, Col, Head, Tail) then
+    Exit;                            // read-only selection -> ignore key
+  ReplaceLines(StartLine, OldCount, [Head + ACh + Tail], Point(Col + 1, StartLine));
 end;
 
 procedure TTextControl.NewLine;
 var
-  Line, Left, Right: string;
+  StartLine, OldCount, Col: Integer;
+  Head, Tail: string;
 begin
-  if not ConsumeSelectionForEdit then
-    Exit;                            // selection touched read-only -> ignore key
-
-  Line := FContent[FCaret.Line];
-  Left := Copy(Line, 1, FCaret.Col);
-  Right := Copy(Line, FCaret.Col + 1, MaxInt);
-
-  FContent[FCaret.Line] := Left;
-  FContent.Insert(FCaret.Line + 1, Right);
-
-  SetCaret(FCaret.Line + 1, 0);
+  if not ResolveEditPoint(StartLine, OldCount, Col, Head, Tail) then
+    Exit;
+  // Split at the edit point: Head stays on StartLine, Tail moves to a new line.
+  ReplaceLines(StartLine, OldCount, [Head, Tail], Point(0, StartLine + 1));
 end;
 
 procedure TTextControl.DeleteBack;
 var
-  Line: string;
+  Merged: string;
   PrevLen: Integer;
   ES: TPoint;
 begin
-  // With a selection, Backspace deletes the selection itself (or, if it touches
-  // read-only content, just drops it) - never a neighbouring character.
+  // With a selection, Backspace deletes it (or drops a read-only one) - never a
+  // neighbouring character.
   if not FSelection.IsEmpty then
   begin
-    ConsumeSelectionForEdit;
+    if SelectionIsReadOnly then ClearSelection
+    else DeleteSelectionEdit;
     Exit;
   end;
 
-  // At or before the editable start there is nothing to delete (and we must not
-  // merge across the read-only boundary).
+  // At or before the editable start there is nothing to delete (no cross-boundary
+  // merge).
   ES := EditableStart;
   if (FCaret.Line < ES.Y) or
      ((FCaret.Line = ES.Y) and (FCaret.Col <= ES.X)) then
@@ -539,47 +666,43 @@ begin
   if FCaret.Col > 0 then
   begin
     // Remove the character immediately left of the caret.
-    Line := FContent[FCaret.Line];
-    System.Delete(Line, FCaret.Col, 1);
-    FContent[FCaret.Line] := Line;
-    SetCaret(FCaret.Line, FCaret.Col - 1);
+    Merged := FContent[FCaret.Line];
+    System.Delete(Merged, FCaret.Col, 1);
+    ReplaceLines(FCaret.Line, 1, [Merged], Point(FCaret.Col - 1, FCaret.Line));
   end
-  else if FCaret.Line > 0 then
+  else  // start of line: merge it with the previous line
   begin
-    // At start of a line: merge it with the previous line.
     PrevLen := Length(FContent[FCaret.Line - 1]);
-    FContent[FCaret.Line - 1] := FContent[FCaret.Line - 1] + FContent[FCaret.Line];
-    FContent.Delete(FCaret.Line);
-    SetCaret(FCaret.Line - 1, PrevLen);
+    Merged := FContent[FCaret.Line - 1] + FContent[FCaret.Line];
+    ReplaceLines(FCaret.Line - 1, 2, [Merged], Point(PrevLen, FCaret.Line - 1));
   end;
 end;
 
 procedure TTextControl.DeleteForward;
 var
-  Line: string;
+  Merged: string;
 begin
-  // With a selection, Delete removes the selection itself (or, if it touches
-  // read-only content, just drops it) - never a neighbouring character.
+  // With a selection, Delete deletes it (or drops a read-only one) - never a
+  // neighbouring character.
   if not FSelection.IsEmpty then
   begin
-    ConsumeSelectionForEdit;
+    if SelectionIsReadOnly then ClearSelection
+    else DeleteSelectionEdit;
     Exit;
   end;
 
-  Line := FContent[FCaret.Line];
-  if FCaret.Col < Length(Line) then
+  if FCaret.Col < Length(FContent[FCaret.Line]) then
   begin
     // Remove the character immediately right of the caret (caret stays put).
-    System.Delete(Line, FCaret.Col + 1, 1);
-    FContent[FCaret.Line] := Line;
-    SetCaret(FCaret.Line, FCaret.Col);   // re-clamp + mark the pixel dirty
+    Merged := FContent[FCaret.Line];
+    System.Delete(Merged, FCaret.Col + 1, 1);
+    ReplaceLines(FCaret.Line, 1, [Merged], Point(FCaret.Col, FCaret.Line));
   end
   else if FCaret.Line < FContent.Count - 1 then
   begin
     // At end of line: pull the next line up onto this one.
-    FContent[FCaret.Line] := Line + FContent[FCaret.Line + 1];
-    FContent.Delete(FCaret.Line + 1);
-    SetCaret(FCaret.Line, FCaret.Col);   // caret stays at the join point
+    Merged := FContent[FCaret.Line] + FContent[FCaret.Line + 1];
+    ReplaceLines(FCaret.Line, 2, [Merged], Point(FCaret.Col, FCaret.Line));
   end;
 end;
 
@@ -623,6 +746,20 @@ begin
   begin
     SelectAll;
     Key := 0;                        // handled (also suppresses the #1 KeyPress)
+    Exit;
+  end;
+
+  // Undo / Redo: Ctrl+Z, Ctrl+Shift+Z (redo) and Ctrl+Y (redo).
+  if (ssCtrl in Shift) and (Key = Ord('Z')) then
+  begin
+    if ssShift in Shift then Redo else Undo;
+    Key := 0;
+    Exit;
+  end;
+  if (ssCtrl in Shift) and (Key = Ord('Y')) then
+  begin
+    Redo;
+    Key := 0;
     Exit;
   end;
 
