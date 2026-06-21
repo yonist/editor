@@ -5,7 +5,7 @@ unit uConsole;
 interface
 
 uses
-  Classes, SysUtils, Types, uTextControl, uContent;
+  Classes, SysUtils, Types, Clipbrd, uTextControl, uContent;
 
 type
   TConsoleCommandEvent = procedure(Sender: TObject; const ACommand: string) of object;
@@ -35,6 +35,7 @@ type
     procedure NewLine; override;      // Enter -> submit, not a line split
     procedure MoveUp; override;       // Up/Down don't move the caret; they
     procedure MoveDown; override;     // request history navigation instead
+    procedure Paste; override;        // single-line input: strip line breaks
     procedure PositionCaretFromMouse(X, Y: Integer); override;
   public
     constructor Create(AOwner: TComponent); override;
@@ -139,6 +140,21 @@ begin
   ClearSelection;
   if Assigned(FOnHistory) then
     FOnHistory(Self, False);         // next (newer) entry
+end;
+
+procedure TConsole.Paste;
+var
+  S: string;
+begin
+  if not FInputActive then
+    Exit;
+  // The input is a single line: remove every line break from the pasted text.
+  S := Clipboard.AsText;
+  S := StringReplace(S, #13#10, '', [rfReplaceAll]);
+  S := StringReplace(S, #10, '', [rfReplaceAll]);
+  S := StringReplace(S, #13, '', [rfReplaceAll]);
+  InsertText(S);
+  AfterEdit;
 end;
 
 procedure TConsole.PositionCaretFromMouse(X, Y: Integer);

@@ -71,6 +71,7 @@ type
     function ApplyRecord(const ARec: TUndoRecord): TUndoRecord;
     function CaptureSelection: TUndoSel;
     procedure RestoreSelection(const ASel: TUndoSel);
+    function SplitText(const AText: string): TUndoLines;
   protected
     procedure PaintContent; override;
     procedure Scrolled; override;
@@ -106,6 +107,16 @@ type
     procedure NewLine; virtual;
     procedure DeleteBack; virtual;
     procedure DeleteForward; virtual;
+
+    // Insert (possibly multi-line) text at the caret, replacing any selection,
+    // as a single undo step. Protected so subclasses can feed it transformed
+    // text (the console strips line breaks before pasting).
+    procedure InsertText(const AText: string);
+    procedure Cut;
+    procedure Paste; virtual;
+
+    // Standard post-edit refresh: re-wrap, reposition + scroll the caret, repaint.
+    procedure AfterEdit;
 
     // First editable position; everything before it is read-only. Default is
     // (0,0) - the whole document is editable. (X = column, Y = line.)
@@ -548,11 +559,7 @@ begin
   // ApplyRecord restores content, caret AND selection, and returns the inverse
   // (redo form), which we commit back into the same slot.
   FUndoMgr.CommitUndo(ApplyRecord(Rec));
-
-  RebuildLayout;
-  SyncGoalCol;
-  ReconcileCaret;
-  Invalidate;
+  AfterEdit;
 end;
 
 procedure TTextControl.Redo;
@@ -562,11 +569,7 @@ begin
   if not FUndoMgr.PeekRedo(Rec) then
     Exit;
   FUndoMgr.CommitRedo(ApplyRecord(Rec));
-
-  RebuildLayout;
-  SyncGoalCol;
-  ReconcileCaret;
-  Invalidate;
+  AfterEdit;
 end;
 
 procedure TTextControl.ResetUndo;
@@ -618,6 +621,97 @@ begin
   Head := Copy(FContent[SLine], 1, SCol);
   Tail := Copy(FContent[ELine], ECol + 1, MaxInt);
   ReplaceLines(SLine, ELine - SLine + 1, [Head + Tail], Point(SCol, SLine));
+end;
+
+function TTextControl.SplitText(const AText: string): TUndoLines;
+var
+  S: string;
+  i, Start, N: Integer;
+begin
+  // Normalize CRLF/CR to LF, then split on LF. A trailing line break yields a
+  // trailing empty segment (so a pasted "a\n" inserts "a" + a new empty line).
+  S := StringReplace(AText, #13#10, #10, [rfReplaceAll]);
+  S := StringReplace(S, #13, #10, [rfReplaceAll]);
+
+  N := 1;
+  for i := 1 to Length(S) do
+    if S[i] = #10 then
+      Inc(N);
+  SetLength(Result, N);
+
+  N := 0;
+  Start := 1;
+  for i := 1 to Length(S) do
+    if S[i] = #10 then
+    begin
+      Result[N] := Copy(S, Start, i - Start);
+      Inc(N);
+      Start := i + 1;
+    end;
+  Result[N] := Copy(S, Start, Length(S) - Start + 1);
+end;
+
+procedure TTextControl.InsertText(const AText: string);
+var
+  StartLine, OldCount, Col, i, M: Integer;
+  Head, Tail: string;
+  Segs, NewLines: TUndoLines;
+  CaretAfter: TPoint;
+begin
+  if AText = '' then
+    Exit;
+  if not ResolveEditPoint(StartLine, OldCount, Col, Head, Tail) then
+    Exit;                          // read-only selection -> ignore
+
+  Segs := SplitText(AText);
+  M := Length(Segs);
+
+  if M = 1 then
+  begin
+    // Single line: splice the text between Head and Tail.
+    SetLength(NewLines, 1);
+    NewLines[0] := Head + Segs[0] + Tail;
+    CaretAfter := Point(Length(Head) + Length(Segs[0]), StartLine);
+  end
+  else
+  begin
+    // Multi-line: Head joins the first segment, Tail joins the last, the middle
+    // segments become their own lines.
+    SetLength(NewLines, M);
+    NewLines[0] := Head + Segs[0];
+    for i := 1 to M - 2 do
+      NewLines[i] := Segs[i];
+    NewLines[M - 1] := Segs[M - 1] + Tail;
+    CaretAfter := Point(Length(Segs[M - 1]), StartLine + M - 1);
+  end;
+
+  ReplaceLines(StartLine, OldCount, NewLines, CaretAfter);
+end;
+
+procedure TTextControl.Cut;
+begin
+  if FSelection.IsEmpty then
+    Exit;
+  Clipboard.AsText := SelectedText;   // copy first (works for read-only too)
+  if SelectionIsReadOnly then
+    ClearSelection                    // can't delete read-only -> just drop it
+  else
+    DeleteSelectionEdit;              // records undo + removes the selection
+  AfterEdit;
+end;
+
+procedure TTextControl.Paste;
+begin
+  InsertText(Clipboard.AsText);
+  AfterEdit;
+end;
+
+procedure TTextControl.AfterEdit;
+begin
+  RebuildLayout;       // content changed -> re-wrap (marks the caret pixel dirty)
+  SyncGoalCol;         // a horizontal edit resets the preferred column
+  ReconcileCaret;      // recompute the caret pixel once, scroll into view, place
+  Invalidate;
 end;
 
 procedure TTextControl.InsertChar(ACh: Char);
@@ -717,50 +811,39 @@ begin
     Exit;
 
   InsertChar(Key);                   // any printable char incl. space (#32)
-
-  RebuildLayout;                     // content changed -> re-wrap (marks caret dirty)
-  SyncGoalCol;                       // typing resets the preferred column
-  ReconcileCaret;                    // recompute pixel once, scroll into view, place
-  Invalidate;
+  AfterEdit;
 end;
 
 procedure TTextControl.KeyDown(var Key: Word; Shift: TShiftState);
 var
-  Selecting, IsNav, IsEditKey: Boolean;
+  Selecting, IsNav, IsEditKey, IsCtrlCmd: Boolean;
   SLine, SCol, ELine, ECol: Integer;
 begin
   inherited KeyDown(Key, Shift);
 
-  // Ctrl+C: copy the selection. Read-only and caret-independent, so it runs
-  // before (and instead of) the navigation handling below.
-  if (ssCtrl in Shift) and (Key = Ord('C')) then
+  // Ctrl shortcuts. Each handler repaints itself (Cut/Paste/Undo/Redo via
+  // AfterEdit; Copy/SelectAll repaint as they change the selection), so this is
+  // a pure dispatch with a single consume. An unhandled Ctrl combo falls
+  // through to the navigation handling below.
+  if ssCtrl in Shift then
   begin
-    CopySelection;
-    Key := 0;                        // handled (also suppresses the #3 KeyPress)
-    Exit;
-  end;
+    IsCtrlCmd := True;
+    case Key of
+      Ord('C'): CopySelection;
+      Ord('A'): SelectAll;
+      Ord('X'): Cut;
+      Ord('V'): Paste;
+      Ord('Z'): if ssShift in Shift then Redo else Undo;
+      Ord('Y'): Redo;
+    else
+      IsCtrlCmd := False;
+    end;
 
-  // Ctrl+A: select all editable text. Caret-independent (the selection model is
-  // separate from the caret), so it runs before navigation too.
-  if (ssCtrl in Shift) and (Key = Ord('A')) then
-  begin
-    SelectAll;
-    Key := 0;                        // handled (also suppresses the #1 KeyPress)
-    Exit;
-  end;
-
-  // Undo / Redo: Ctrl+Z, Ctrl+Shift+Z (redo) and Ctrl+Y (redo).
-  if (ssCtrl in Shift) and (Key = Ord('Z')) then
-  begin
-    if ssShift in Shift then Redo else Undo;
-    Key := 0;
-    Exit;
-  end;
-  if (ssCtrl in Shift) and (Key = Ord('Y')) then
-  begin
-    Redo;
-    Key := 0;
-    Exit;
+    if IsCtrlCmd then
+    begin
+      Key := 0;                      // handled (also suppresses the KeyPress)
+      Exit;
+    end;
   end;
 
   // Editing commands all live here so they're in one place. Backspace and Enter
@@ -779,10 +862,7 @@ begin
 
   if IsEditKey then begin
     Key := 0;
-    RebuildLayout;                   // content changed -> re-wrap
-    SyncGoalCol;
-    ReconcileCaret;                  // recompute pixel once, scroll into view, place
-    Invalidate;
+    AfterEdit;
     Exit;
   end;
 
