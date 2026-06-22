@@ -40,7 +40,7 @@ type
   TUndoRecordArray = array of TUndoRecord;
 
 const
-  UndoMaxDepth = 512;   // fixed capacity; the array is allocated once
+  UndoMaxDepth = 20;   // fixed capacity; the array is allocated once
 
 type
   { TUndoManager
@@ -102,17 +102,18 @@ begin
   if FCount = UndoMaxDepth then
   begin
     {
-       if things get slow use this:
-       FHistory[0].Lines := nil;                          // finalize oldest (frees it)
-       Move(FHistory[1], FHistory[0], (FCount-1)*SizeOf(TUndoRecord));
-       FillChar(FHistory[FCount-1], SizeOf(TUndoRecord), 0);  // blank tail, NO finalize
-       Dec(FCount); Dec(FCursor);
+       This is the slow naive algo
+       for i := 1 to FCount - 1 do
+         FHistory[i - 1] := FHistory[i];
 
-       or use a ring buffer so no shift is ever needed
+       FHistory[FCount - 1] := Default(TUndoRecord);   // nil the freed tail slot
+
+
+       if it ever gets to slow switch to ring buffer so no shift is ever needed
     }
-    for i := 1 to FCount - 1 do
-      FHistory[i - 1] := FHistory[i];
-    FHistory[FCount - 1] := Default(TUndoRecord);   // nil the freed tail slot
+    FHistory[0] := Default(TUndoRecord);                          // finalize oldest (frees it)
+    Move(FHistory[1], FHistory[0], (FCount-1)*SizeOf(TUndoRecord));
+    FillChar(FHistory[FCount-1], SizeOf(TUndoRecord), 0);  // blank tail, NO finalize
     Dec(FCount);
     Dec(FCursor);
   end;
