@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Types, Controls, Graphics, Math, LCLType, Clipbrd,
-  uScrollControl, uContent, uCaret, uLayout, uSelection, uUndo;
+  uScrollControl, uContent, uCaret, uLayout, uSelection, uUndo, uHighlighter;
 
 type
   { TTextControl
@@ -43,6 +43,12 @@ type
     FMouseDownPt: TPoint;          // client px where the gesture began
     FSelAnchorPt: TPoint;          // logical (Col,Line) anchor captured at mouse down
     FUndoMgr: TUndoManager;        // undo/redo stacks
+    FHighlighter: THighlighter;    // nil = no syntax highlighting
+    FColors: TSyntaxColors;        // token kind -> colour
+    FHL: TLineHLArray;             // per-line highlight cache (states + tokens)
+    FStatesValid: Integer;         // start-states valid for FHL[0..FStatesValid)
+    FScanTokens: TTokenArray;      // scratch buffer for state-only lexing
+    FTokFirst, FTokLast: Integer;  // line range currently holding cached tokens
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
@@ -64,15 +70,29 @@ type
     function ResolveEditPoint(out AStartLine, AOldCount, ACol: Integer;
       out AHead, ATail: string): Boolean;
     procedure DeleteSelectionEdit;
-    procedure SwapLines(AFirstLine, ARemoveCount: Integer;
-      const ANew: array of string);
     procedure ReplaceLines(AFirstLine, AOldCount: Integer;
       const ANew: array of string; ACaretAfter: TPoint);
     function ApplyRecord(const ARec: TUndoRecord): TUndoRecord;
     function CaptureSelection: TUndoSel;
     procedure RestoreSelection(const ASel: TUndoSel);
     function SplitText(const AText: string): TUndoLines;
+    // Syntax highlight cache.
+    procedure SetHighlighter(AValue: THighlighter);
+    procedure HLInvalidate(AFromLine: Integer);
+    procedure EnsureStates(AUpTo: Integer);
+    procedure EnsureLineTokens(ALine: Integer);
+    procedure DrawSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer; AColor: TColor);
+    procedure DrawColoredSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer);
+    procedure DrawRow(const ARow: TVisualRow; AYp: Integer);
   protected
+    // Block content mutation - the single choke point (editing, undo/redo, and
+    // the console's programmatic appends all route through here), so it is also
+    // where the highlight cache is invalidated. Protected for subclasses.
+    procedure SwapLines(AFirstLine, ARemoveCount: Integer;
+      const ANew: array of string);
+    // Release cached tokens for lines outside [AFirst, ALast]. The console keeps
+    // its immutable scrollback by overriding this to a no-op.
+    procedure EvictTokens(AFirst, ALast: Integer); virtual;
     procedure PaintContent; override;
     procedure Scrolled; override;
     procedure Resize; override;
@@ -151,6 +171,8 @@ type
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
     property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
+    property Highlighter: THighlighter read FHighlighter write SetHighlighter;
+    property Colors: TSyntaxColors read FColors write FColors;
   end;
 
 implementation
@@ -170,6 +192,10 @@ begin
   FWordWrap := True;
   FLeftMargin := 4;
   FCaretDirty := True;
+  FColors := DefaultSyntaxColors;
+  FStatesValid := 0;
+  FTokFirst := 0;
+  FTokLast := -1;                   // empty token-cached range
 
   // Only monospace fonts are supported.
   Font.BeginUpdate;
@@ -475,6 +501,191 @@ begin
     FContent.Delete(AFirstLine);
   for i := 0 to High(ANew) do
     FContent.Insert(AFirstLine + i, ANew[i]);
+  HLInvalidate(AFirstLine);          // content from here changed -> re-lex
+end;
+
+{ ---- syntax highlighting: state + token cache ---- }
+
+procedure TTextControl.SetHighlighter(AValue: THighlighter);
+begin
+  if FHighlighter = AValue then
+    Exit;
+  FHighlighter := AValue;
+  // Everything must be re-lexed.
+  SetLength(FHL, 0);
+  FStatesValid := 0;
+  FTokFirst := 0;
+  FTokLast := -1;
+  Invalidate;
+end;
+
+procedure TTextControl.HLInvalidate(AFromLine: Integer);
+begin
+  if AFromLine < 0 then
+    AFromLine := 0;
+  // Start-states and tokens from AFromLine are suspect; drop them. Lines above
+  // are unchanged, so their cache stays valid. EnsureStates rebuilds lazily.
+  if AFromLine < FStatesValid then
+    FStatesValid := AFromLine;
+  if AFromLine < Length(FHL) then
+    SetLength(FHL, AFromLine);       // releases token arrays at/after AFromLine
+  if FTokLast >= AFromLine then
+    FTokLast := AFromLine - 1;
+end;
+
+procedure TTextControl.EnsureStates(AUpTo: Integer);
+var
+  Cnt: Integer;
+  S: TLexState;
+begin
+  if FHighlighter = nil then
+    Exit;
+  if AUpTo > FContent.Count - 1 then
+    AUpTo := FContent.Count - 1;
+  if AUpTo < 0 then
+    Exit;
+
+  if Length(FHL) < FContent.Count then
+    SetLength(FHL, FContent.Count);  // grow to match content (preserves [0, old))
+
+  if FStatesValid = 0 then
+  begin
+    FHL[0].State := 0;               // the first line is always in the normal state
+    FStatesValid := 1;
+  end;
+
+  // Propagate start-states forward by lexing each predecessor (tokens discarded).
+  while FStatesValid <= AUpTo do
+  begin
+    S := FHL[FStatesValid - 1].State;
+    FHighlighter.ScanLine(FContent[FStatesValid - 1], S, FScanTokens, Cnt);
+    FHL[FStatesValid].State := S;
+    Inc(FStatesValid);
+  end;
+end;
+
+procedure TTextControl.EnsureLineTokens(ALine: Integer);
+var
+  S: TLexState;
+begin
+  EnsureStates(ALine);               // FHL[ALine].State now valid
+  if FHL[ALine].HasTokens then
+    Exit;
+  S := FHL[ALine].State;
+  FHighlighter.ScanLine(FContent[ALine], S, FHL[ALine].Tokens, FHL[ALine].Count);
+  FHL[ALine].HasTokens := True;
+  // Token-lexing also produced this line's end-state: advance the frontier so
+  // the next line isn't lexed twice.
+  if (FStatesValid = ALine + 1) and (ALine + 1 < Length(FHL)) then
+  begin
+    FHL[ALine + 1].State := S;
+    FStatesValid := ALine + 2;
+  end;
+end;
+
+procedure TTextControl.DrawSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer;
+  AColor: TColor);
+begin
+  if ATo <= AFrom then
+    Exit;
+  Canvas.Font.Color := AColor;
+  Canvas.TextOut(FLeftMargin + (AFrom - ARowStart) * FCharWidth, AYp,
+    Copy(FContent[ALine], AFrom + 1, ATo - AFrom));
+end;
+
+procedure TTextControl.DrawColoredSpan(ALine, ARowStart, AFrom, ATo,
+  AYp: Integer);
+var
+  ti, col, ts, te: Integer;
+  T: TToken;
+begin
+  col := AFrom;
+  for ti := 0 to FHL[ALine].Count - 1 do
+  begin
+    T := FHL[ALine].Tokens[ti];
+    if T.StartCol >= ATo then
+      Break;
+    if T.StartCol + T.Length <= AFrom then
+      Continue;
+    ts := T.StartCol;
+    if ts < AFrom then ts := AFrom;
+    te := T.StartCol + T.Length;
+    if te > ATo then te := ATo;
+    if ts > col then
+      DrawSpan(ALine, ARowStart, col, ts, AYp, FColors[tkText]);  // gap = plain
+    DrawSpan(ALine, ARowStart, ts, te, AYp, FColors[T.Kind]);
+    col := te;
+  end;
+  if col < ATo then
+    DrawSpan(ALine, ARowStart, col, ATo, AYp, FColors[tkText]);
+end;
+
+procedure TTextControl.DrawRow(const ARow: TVisualRow; AYp: Integer);
+var
+  L, RowEnd, C0, C1, LineLen: Integer;
+  HasSel: Boolean;
+begin
+  L := ARow.LogicalLine;
+  LineLen := Length(FContent[L]);
+  RowEnd := ARow.StartCol + ARow.Length;
+
+  HasSel := (not FSelection.IsEmpty) and
+            FSelection.RangeOnLine(L, LineLen, C0, C1);
+  if HasSel then
+  begin
+    if C0 < ARow.StartCol then C0 := ARow.StartCol;
+    if C1 > RowEnd then C1 := RowEnd;
+    if C1 <= C0 then HasSel := False;
+  end;
+
+  if FHighlighter <> nil then
+    EnsureLineTokens(L);
+
+  if not HasSel then
+  begin
+    if FHighlighter <> nil then
+      DrawColoredSpan(L, ARow.StartCol, ARow.StartCol, RowEnd, AYp)
+    else
+      DrawSpan(L, ARow.StartCol, ARow.StartCol, RowEnd, AYp, FColors[tkText]);
+    Exit;
+  end;
+
+  // Fill the selection band, then draw: token-coloured outside, one uniform
+  // selection foreground inside.
+  Canvas.Brush.Style := bsSolid;
+  Canvas.Brush.Color := clHighlight;
+  Canvas.FillRect(Rect(FLeftMargin + (C0 - ARow.StartCol) * FCharWidth, AYp,
+                       FLeftMargin + (C1 - ARow.StartCol) * FCharWidth, AYp + FLineHeight));
+  Canvas.Brush.Style := bsClear;
+
+  if FHighlighter <> nil then
+  begin
+    DrawColoredSpan(L, ARow.StartCol, ARow.StartCol, C0, AYp);
+    DrawColoredSpan(L, ARow.StartCol, C1, RowEnd, AYp);
+  end
+  else
+  begin
+    DrawSpan(L, ARow.StartCol, ARow.StartCol, C0, AYp, FColors[tkText]);
+    DrawSpan(L, ARow.StartCol, C1, RowEnd, AYp, FColors[tkText]);
+  end;
+  DrawSpan(L, ARow.StartCol, C0, C1, AYp, clHighlightText);   // selected text
+end;
+
+procedure TTextControl.EvictTokens(AFirst, ALast: Integer);
+var
+  k: Integer;
+begin
+  // Free token arrays for lines painted last time that are now off-screen. Only
+  // the previous window is scanned, so this is viewport-bounded.
+  for k := FTokFirst to FTokLast do
+    if ((k < AFirst) or (k > ALast)) and (k < Length(FHL)) then
+    begin
+      SetLength(FHL[k].Tokens, 0);
+      FHL[k].Count := 0;
+      FHL[k].HasTokens := False;
+    end;
+  FTokFirst := AFirst;
+  FTokLast := ALast;
 end;
 
 function TTextControl.CaptureSelection: TUndoSel;
@@ -1194,10 +1405,8 @@ end;
 
 procedure TTextControl.PaintContent;
 var
-  i, First, Last: Integer;
+  i, First, Last, LFirst, LLast: Integer;
   Row: TVisualRow;
-  LineText: string;
-  Yp, C0, C1: Integer;
 begin
   // Hide the system caret while we draw over the client area.
   FCaret.SuspendForPaint;
@@ -1225,34 +1434,24 @@ begin
   if Last > FLayout.Count - 1 then
     Last := FLayout.Count - 1;
 
+  LFirst := MaxInt;
+  LLast := -1;
   for i := First to Last do
   begin
     Row := FLayout[i];
     if Row.LogicalLine >= FContent.Count then
       Continue;
 
-    LineText := FContent[Row.LogicalLine];
-    Yp := i * FLineHeight - ScrollOffsetY;
+    DrawRow(Row, i * FLineHeight - ScrollOffsetY);
 
-    // Selection band (C1): fill the selected cells on this visual row, then
-    // draw the (transparent-brush) text over the band in the default colour.
-    if (not FSelection.IsEmpty) and FSelection.RangeOnLine(Row.LogicalLine, Length(LineText), C0, C1) then
-    begin
-      // Intersect the line's selected span with this visual row's slice.
-      if C0 < Row.StartCol then C0 := Row.StartCol;
-      if C1 > Row.StartCol + Row.Length then C1 := Row.StartCol + Row.Length;
-      if C1 > C0 then
-      begin
-        Canvas.Brush.Style := bsSolid;
-        Canvas.Brush.Color := clHighlight;
-        Canvas.FillRect(Rect(FLeftMargin + (C0 - Row.StartCol) * FCharWidth, Yp,
-                             FLeftMargin + (C1 - Row.StartCol) * FCharWidth, Yp + FLineHeight));
-        Canvas.Brush.Style := bsClear;
-      end;
-    end;
-
-    Canvas.TextOut(FLeftMargin, Yp, Copy(LineText, Row.StartCol + 1, Row.Length));
+    if Row.LogicalLine < LFirst then LFirst := Row.LogicalLine;
+    if Row.LogicalLine > LLast then LLast := Row.LogicalLine;
   end;
+
+  // Drop token caches for lines that scrolled out of view (the console keeps
+  // its immutable scrollback by overriding EvictTokens).
+  if (FHighlighter <> nil) and (LLast >= LFirst) then
+    EvictTokens(LFirst, LLast);
 
   // Reposition and restore the caret (recomputes pixel only if marked dirty).
   RefreshCaret;

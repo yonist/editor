@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls,
-  uCodeEditor, uConsole;
+  uCodeEditor, uConsole, uHighlighterPython, uHighlighterSQL;
 
 type
   TForm1 = class(TForm)
@@ -67,29 +67,35 @@ begin
   FEditor.Parent := FTopPanel;
   FEditor.Align := alClient;
   FEditor.WordWrap:= true;
+  FEditor.Highlighter := PythonHighlighter;   // shared singleton
 
   FConsole := TConsole.Create(Self);
   FConsole.Parent := FBottomPanel;
   FConsole.Align := alClient;
+  FConsole.Highlighter := SqlHighlighter;      // SQL console
 end;
 
 procedure TForm1.SeedEditor;
 var
   I: Integer;
 begin
-  // Some sample text so we can see it painting.
-
-  FEditor.Content.Add('program Hello;');
-  FEditor.Content.Add('begin');
-  FEditor.Content.Add('  WriteLn(''Hello, world!'');');
-  FEditor.Content.Add('end.');
+  // Sample Python so the highlighter has something to colour.
+  FEditor.Content.Add('# greet.py - a tiny demo');
+  FEditor.Content.Add('import sys');
   FEditor.Content.Add('');
-  FEditor.Content.Add('// A deliberately long line of text that should wrap across several visual rows when WordWrap is enabled, demonstrating the new soft word-wrapping layout.');
+  FEditor.Content.Add('def greet(name):');
+  FEditor.Content.Add('    """Return a greeting for the given name."""');
+  FEditor.Content.Add('    if name == "":');
+  FEditor.Content.Add('        return ''Hello, world!''');
+  FEditor.Content.Add('    return f''Hello, {name}!''   # 42 is not the answer here');
+  FEditor.Content.Add('');
+  FEditor.Content.Add('for i in range(40):');
+  FEditor.Content.Add('    print(greet(str(i)), i * 3.14)');
   FEditor.Content.Add('');
 
   // Enough lines to overflow the viewport so the scrollbar engages.
   for I := 1 to 40 do
-    FEditor.Content.Add('Line ' + IntToStr(I) + ' - the quick brown fox jumps over the lazy dog.');
+    FEditor.Content.Add('x = ' + IntToStr(I) + '   # comment for line ' + IntToStr(I));
 
   // Start the caret at the end of the last line.
   FEditor.Caret.SetPosition(FEditor.Content.Count - 1,

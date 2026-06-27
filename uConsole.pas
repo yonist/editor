@@ -36,6 +36,7 @@ type
     procedure MoveUp; override;       // Up/Down don't move the caret; they
     procedure MoveDown; override;     // request history navigation instead
     procedure Paste; override;        // single-line input: strip line breaks
+    procedure EvictTokens(AFirst, ALast: Integer); override;  // keep scrollback cached
     procedure PositionCaretFromMouse(X, Y: Integer); override;
   public
     constructor Create(AOwner: TComponent); override;
@@ -188,7 +189,8 @@ procedure TConsole.SetInput(const AText: string);
 begin
   if not FInputActive then
     Exit;
-  Content[LastLineIndex] := FPrompt + AText;
+  // Replace the input line (non-recorded); SwapLines invalidates the highlight.
+  SwapLines(LastLineIndex, 1, [FPrompt + AText]);
   ResetUndo;                         // a recalled line is a fresh, non-recorded state
   RefreshView;                       // re-wrap first, so the caret maps correctly
   // Caret to end of input; SetPosition also scrolls it into view.
@@ -198,22 +200,32 @@ end;
 procedure TConsole.Output(const AText: string);
 var
   Lines: TStringList;
+  Arr: array of string;
   i: Integer;
 begin
   Lines := TStringList.Create;
   try
     Lines.Text := AText;
+    SetLength(Arr, Lines.Count);
     for i := 0 to Lines.Count - 1 do
-      Content.Add(Lines[i]);
+      Arr[i] := Lines[i];
+    SwapLines(Content.Count, 0, Arr);   // append (non-recorded)
   finally
     Lines.Free;
   end;
   RefreshView;
 end;
 
+procedure TConsole.EvictTokens(AFirst, ALast: Integer);
+begin
+  // The scrollback is immutable, so its highlight data is cached for good; only
+  // the input line is ever re-lexed (its own edits invalidate just itself).
+  // Hence: never evict.
+end;
+
 procedure TConsole.NewPrompt;
 begin
-  Content.Add(FPrompt);
+  SwapLines(Content.Count, 0, [FPrompt]);   // append the prompt line (non-recorded)
   FInputActive := True;
   ResetUndo;                         // undo is scoped to the current input line
   RefreshView;                       // re-wrap first, so the caret maps correctly
