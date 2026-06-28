@@ -5,7 +5,7 @@ unit uCaret;
 interface
 
 uses
-  Classes, Windows;
+  Classes, Windows, Graphics;
 
 type
   { TCaret
@@ -17,8 +17,12 @@ type
     the host control computes the pixel position (it owns the wrap layout) and
     pushes it here via MoveTo. The host still supplies:
       - the window handle + focus transitions (Show / Hide)
-      - the caret bar height (SetLineHeight)
+      - the caret bar height (SetLineHeight) and colour (SetColor)
       - a chance to hide/show around painting (SuspendForPaint / ResumeAfterPaint)
+
+    A solid-colour bitmap of the caret size is passed to CreateCaret so the
+    caret can be coloured (a NULL-bitmap caret is always black - invisible on a
+    dark theme).
 
     See: https://learn.microsoft.com/en-us/windows/win32/menurc/carets }
   TCaret = class
@@ -31,8 +35,13 @@ type
     FActive: Boolean;       // a system caret currently exists on FHandle
     FWidth: Integer;        // caret bar width, px
     FLineHeight: Integer;   // caret bar height, px
+    FCaretColor: TColor;    // desired caret colour
+    FBackColor: TColor;     // background it sits over (for the XOR shape)
+    FBitmap: HBITMAP;       // caret shape (filled with Back XOR Caret)
     FOnChange: TNotifyEvent;
     procedure ApplyPos;
+    procedure RebuildBitmap;
+    procedure CreateOS;     // (re)create + show the OS caret with the current bitmap
   public
     constructor Create;
     destructor Destroy; override;
@@ -40,8 +49,12 @@ type
     // Logical position (the host maps this to pixels via MoveTo).
     procedure SetPosition(ALine, ACol: Integer);
 
-    // Caret bar height (matches the line height).
+    // Caret bar height (matches the line height) and colours. The Win32 caret
+    // is XOR-drawn, so we fill the shape with (Back XOR Caret): XOR-ing that
+    // against the background renders the requested caret colour. (A plain colour
+    // fill would be invisible whenever it cancels the background - e.g. black.)
     procedure SetLineHeight(AHeight: Integer);
+    procedure SetColors(ACaret, ABack: TColor);
 
     // Pixel position, computed by the host from the wrap layout.
     procedure MoveTo(AX, AY: Integer);
@@ -71,12 +84,57 @@ begin
   inherited Create;
   FWidth := 2;
   FLineHeight := 1;
+  FCaretColor := clBlack;
+  FBackColor := clWhite;
+  FBitmap := 0;
 end;
 
 destructor TCaret.Destroy;
 begin
   Hide;
+  if FBitmap <> 0 then
+    DeleteObject(FBitmap);
   inherited Destroy;
+end;
+
+procedure TCaret.RebuildBitmap;
+var
+  ScreenDC, MemDC: HDC;
+  OldBmp: HGDIOBJ;
+  Brush: HBRUSH;
+  R: Windows.TRect;
+begin
+  if FBitmap <> 0 then
+  begin
+    DeleteObject(FBitmap);
+    FBitmap := 0;
+  end;
+  if (FWidth <= 0) or (FLineHeight <= 0) then
+    Exit;
+
+  // A small bitmap of the caret size, filled solid with the caret colour.
+  ScreenDC := GetDC(0);
+  FBitmap := CreateCompatibleBitmap(ScreenDC, FWidth, FLineHeight);
+  MemDC := CreateCompatibleDC(ScreenDC);
+  OldBmp := SelectObject(MemDC, FBitmap);
+  // XOR shape: (background XOR caret) XOR background == caret.
+  Brush := CreateSolidBrush(COLORREF(ColorToRGB(FBackColor) xor ColorToRGB(FCaretColor)));
+  R.Left := 0; R.Top := 0; R.Right := FWidth; R.Bottom := FLineHeight;
+  Windows.FillRect(MemDC, R, Brush);
+  DeleteObject(Brush);
+  SelectObject(MemDC, OldBmp);
+  DeleteDC(MemDC);
+  ReleaseDC(0, ScreenDC);
+end;
+
+procedure TCaret.CreateOS;
+begin
+  RebuildBitmap;          // size/colour may have changed since last time
+  // With a bitmap, CreateCaret takes the shape from it (the width/height args
+  // are ignored, but harmless to pass).
+  Windows.CreateCaret(FHandle, FBitmap, FWidth, FLineHeight);
+  ApplyPos;
+  Windows.ShowCaret(FHandle);
 end;
 
 procedure TCaret.SetPosition(ALine, ACol: Integer);
@@ -92,15 +150,18 @@ begin
   if AHeight < 1 then
     AHeight := 1;
   FLineHeight := AHeight;
-
-  // If the caret already exists, recreate it so its height matches.
-  // (CreateCaret replaces any existing caret for this thread.)
   if FActive then
-  begin
-    Windows.CreateCaret(FHandle, 0, FWidth, FLineHeight);
-    ApplyPos;
-    Windows.ShowCaret(FHandle);
-  end;
+    CreateOS;             // recreate so the shape matches the new height
+end;
+
+procedure TCaret.SetColors(ACaret, ABack: TColor);
+begin
+  if (ACaret = FCaretColor) and (ABack = FBackColor) then
+    Exit;
+  FCaretColor := ACaret;
+  FBackColor := ABack;
+  if FActive then
+    CreateOS;             // recreate so the caret takes the new colour
 end;
 
 procedure TCaret.MoveTo(AX, AY: Integer);
@@ -116,10 +177,8 @@ begin
     Exit;
 
   FHandle := AHandle;
-  Windows.CreateCaret(FHandle, 0, FWidth, FLineHeight);
   FActive := True;
-  ApplyPos;
-  Windows.ShowCaret(FHandle);
+  CreateOS;
 end;
 
 procedure TCaret.Hide;

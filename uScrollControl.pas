@@ -30,6 +30,8 @@ type
     FDragging: Boolean;       // a thumb drag is in progress
     FDragOffset: Integer;     // grab point inside the thumb, px
     FWheelAccum: Integer;     // leftover wheel delta (for sub-notch trackpad scrolling)
+    FTrackColor: TColor;      // scrollbar track
+    FThumbColor: TColor;      // scrollbar thumb
     function MaxScrollY: Integer;
     function ThumbRect: TRect;
     procedure SetScrollY(AValue: Integer);
@@ -38,6 +40,8 @@ type
     procedure Paint; override;
     procedure PaintContent; virtual; abstract;   // descendant draws here
     procedure DrawScrollBar; virtual;            // base draws the thumb
+    // Theme the scrollbar (called by descendants when a theme is applied).
+    procedure SetScrollColors(ATrack, AThumb: TColor);
     procedure Scrolled; virtual;                 // hook: scroll position changed
 
     function ViewportHeight: Integer;            // visible content height, px
@@ -71,7 +75,15 @@ begin
   FBarWidth := 16;
   FMinThumb := 20;
   FScrollStep := 16;
+  FTrackColor := clBtnFace;   // theme overrides these
+  FThumbColor := clBtnShadow;
   DoubleBuffered := True;     // flicker-free scroll repaints
+end;
+
+procedure TScrollControl.SetScrollColors(ATrack, AThumb: TColor);
+begin
+  FTrackColor := ATrack;
+  FThumbColor := AThumb;
 end;
 
 function TScrollControl.ViewportHeight: Integer;
@@ -184,12 +196,12 @@ begin
 
   // Track.
   Canvas.Brush.Style := bsSolid;
-  Canvas.Brush.Color := clBtnFace;
+  Canvas.Brush.Color := FTrackColor;
   Canvas.FillRect(Rect(ClientWidth - FBarWidth, 0, ClientWidth, ViewportHeight));
 
   // Thumb.
   Tr := ThumbRect;
-  Canvas.Brush.Color := clBtnShadow;
+  Canvas.Brush.Color := FThumbColor;
   Canvas.FillRect(Tr);
 end;
 

@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls,
-  uCodeEditor, uConsole, uHighlighterPython, uHighlighterSQL;
+  uCodeEditor, uConsole, uHighlighterPython, uHighlighterSQL, uTheme;
 
 type
   TForm1 = class(TForm)
@@ -73,6 +73,7 @@ begin
   FConsole.Parent := FBottomPanel;
   FConsole.Align := alClient;
   FConsole.Highlighter := SqlHighlighter;      // SQL console
+  FConsole.ThemeKind := thLight;               // editor stays dark; console light
 end;
 
 procedure TForm1.SeedEditor;

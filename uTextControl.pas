@@ -6,7 +6,8 @@ interface
 
 uses
   Classes, SysUtils, Types, Controls, Graphics, Math, LCLType, Clipbrd,
-  uScrollControl, uContent, uCaret, uLayout, uSelection, uUndo, uHighlighter;
+  uScrollControl, uContent, uCaret, uLayout, uSelection, uUndo, uHighlighter,
+  uTheme;
 
 type
   { TTextControl
@@ -49,6 +50,9 @@ type
     FStatesValid: Integer;         // start-states valid for FHL[0..FStatesValid)
     FScanTokens: TTokenArray;      // scratch buffer for state-only lexing
     FTokFirst, FTokLast: Integer;  // line range currently holding cached tokens
+    FSelBack: TColor;              // selection band colour (themed)
+    FSelFore: TColor;              // selected text colour (themed)
+    FThemeKind: TThemeKind;
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
@@ -84,6 +88,8 @@ type
     procedure DrawSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer; AColor: TColor);
     procedure DrawColoredSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer);
     procedure DrawRow(const ARow: TVisualRow; AYp: Integer);
+    procedure ApplyTheme(const ATheme: TTheme);
+    procedure SetThemeKind(AValue: TThemeKind);
   protected
     // Block content mutation - the single choke point (editing, undo/redo, and
     // the console's programmatic appends all route through here), so it is also
@@ -173,6 +179,7 @@ type
     property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
     property Highlighter: THighlighter read FHighlighter write SetHighlighter;
     property Colors: TSyntaxColors read FColors write FColors;
+    property ThemeKind: TThemeKind read FThemeKind write SetThemeKind;
   end;
 
 implementation
@@ -192,7 +199,6 @@ begin
   FWordWrap := True;
   FLeftMargin := 4;
   FCaretDirty := True;
-  FColors := DefaultSyntaxColors;
   FStatesValid := 0;
   FTokFirst := 0;
   FTokLast := -1;                   // empty token-cached range
@@ -203,8 +209,9 @@ begin
   Font.Size := 18;
   Font.EndUpdate;
 
-  Color := clWhite;
   TabStop := True;          // allow the control to receive keyboard focus
+  FThemeKind := thDark;
+  ApplyTheme(DarkTheme);    // default theme (sets Color, syntax, selection, caret, bar)
 end;
 
 destructor TTextControl.Destroy;
@@ -653,7 +660,7 @@ begin
   // Fill the selection band, then draw: token-coloured outside, one uniform
   // selection foreground inside.
   Canvas.Brush.Style := bsSolid;
-  Canvas.Brush.Color := clHighlight;
+  Canvas.Brush.Color := FSelBack;
   Canvas.FillRect(Rect(FLeftMargin + (C0 - ARow.StartCol) * FCharWidth, AYp,
                        FLeftMargin + (C1 - ARow.StartCol) * FCharWidth, AYp + FLineHeight));
   Canvas.Brush.Style := bsClear;
@@ -668,7 +675,27 @@ begin
     DrawSpan(L, ARow.StartCol, ARow.StartCol, C0, AYp, FColors[tkText]);
     DrawSpan(L, ARow.StartCol, C1, RowEnd, AYp, FColors[tkText]);
   end;
-  DrawSpan(L, ARow.StartCol, C0, C1, AYp, clHighlightText);   // selected text
+  DrawSpan(L, ARow.StartCol, C0, C1, AYp, FSelFore);   // selected text
+end;
+
+procedure TTextControl.ApplyTheme(const ATheme: TTheme);
+begin
+  Color := ATheme.Background;
+  FSelBack := ATheme.SelBack;
+  FSelFore := ATheme.SelFore;
+  FColors := ATheme.Syntax;
+  FCaret.SetColors(ATheme.Caret, ATheme.Background);   // XOR-drawn against the bg
+  SetScrollColors(ATheme.ScrollTrack, ATheme.ScrollThumb);   // inherited
+  Invalidate;
+end;
+
+procedure TTextControl.SetThemeKind(AValue: TThemeKind);
+begin
+  FThemeKind := AValue;
+  case AValue of
+    thLight: ApplyTheme(LightTheme);
+    thDark:  ApplyTheme(DarkTheme);
+  end;
 end;
 
 procedure TTextControl.EvictTokens(AFirst, ALast: Integer);
