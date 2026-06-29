@@ -902,6 +902,7 @@ var
   S: string;
   i, Start, N: Integer;
 begin
+  Result := nil;
   // Normalize CRLF/CR to LF, then split on LF. A trailing line break yields a
   // trailing empty segment (so a pasted "a\n" inserts "a" + a new empty line).
   S := StringReplace(AText, #13#10, #10, [rfReplaceAll]);
