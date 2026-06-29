@@ -53,6 +53,8 @@ type
     FSelBack: TColor;              // selection band colour (themed)
     FSelFore: TColor;              // selected text colour (themed)
     FThemeKind: TThemeKind;
+    FTabWidth: Integer;            // spaces per Tab when FTabAsSpaces
+    FTabAsSpaces: Boolean;         // Tab inserts spaces (True) or a #9 (False)
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
@@ -134,6 +136,11 @@ type
     procedure DeleteBack; virtual;
     procedure DeleteForward; virtual;
 
+    // Tab (ABack=False) indents; Shift+Tab (ABack=True) unindents. Returns True
+    // if the content changed. Virtual so subclasses can repurpose it (the
+    // console just consumes the key and returns False).
+    function DoTab(ABack: Boolean): Boolean; virtual;
+
     // Insert (possibly multi-line) text at the caret, replacing any selection,
     // as a single undo step. Protected so subclasses can feed it transformed
     // text (the console strips line breaks before pasting).
@@ -184,6 +191,8 @@ type
     property Highlighter: THighlighter read FHighlighter write SetHighlighter;
     property Colors: TSyntaxColors read FColors write FColors;
     property ThemeKind: TThemeKind read FThemeKind write SetThemeKind;
+    property TabWidth: Integer read FTabWidth write FTabWidth;
+    property TabAsSpaces: Boolean read FTabAsSpaces write FTabAsSpaces;
   end;
 
 implementation
@@ -203,6 +212,8 @@ begin
   FWordWrap := True;
   FLeftMargin := 4;
   FCaretDirty := True;
+  FTabWidth := 4;
+  FTabAsSpaces := True;
   FStatesValid := 0;
   FTokFirst := 0;
   FTokLast := -1;                   // empty token-cached range
@@ -1063,6 +1074,49 @@ begin
   end;
 end;
 
+function TTextControl.DoTab(ABack: Boolean): Boolean;
+var
+  Line, NewLine: string;
+  Col, RemoveCount, c: Integer;
+begin
+  if not ABack then
+  begin
+    // Indent: insert at the caret (replacing any selection, like typed text).
+    if FTabAsSpaces then
+      InsertText(StringOfChar(' ', FTabWidth))
+    else
+      InsertText(#9);
+    Result := True;
+    Exit;
+  end;
+
+  // Unindent: remove up to TabWidth whitespace immediately left of the caret
+  // (or a single tab character).
+  Result := False;
+  Col := FCaret.Col;                 // 0-based; Line[Col] (1-based) is the char left of it
+  if Col = 0 then
+    Exit;
+  Line := FContent[FCaret.Line];
+  if Line[Col] = #9 then
+    RemoveCount := 1
+  else
+  begin
+    RemoveCount := 0;
+    c := Col;
+    while (c > 0) and (RemoveCount < FTabWidth) and (Line[c] = ' ') do
+    begin
+      Dec(c);
+      Inc(RemoveCount);
+    end;
+  end;
+  if RemoveCount = 0 then
+    Exit;
+
+  NewLine := Copy(Line, 1, Col - RemoveCount) + Copy(Line, Col + 1, MaxInt);
+  ReplaceLines(FCaret.Line, 1, [NewLine], Point(Col - RemoveCount, FCaret.Line));
+  Result := True;
+end;
+
 procedure TTextControl.KeyPress(var Key: Char);
 begin
   inherited KeyPress(Key);
@@ -1079,7 +1133,7 @@ end;
 
 procedure TTextControl.KeyDown(var Key: Word; Shift: TShiftState);
 var
-  Selecting, IsNav, IsEditKey, IsCtrlCmd: Boolean;
+  Selecting, IsNav, IsEditKey, IsCtrlCmd, Changed: Boolean;
   SLine, SCol, ELine, ECol: Integer;
 begin
   inherited KeyDown(Key, Shift);
@@ -1112,20 +1166,24 @@ begin
   // Editing commands all live here so they're in one place. Backspace and Enter
   // also arrive as control characters in KeyPress, but setting Key := 0
   // suppresses that follow-up - and KeyPress ignores control characters anyway,
-  // so a widgetset that still delivers it does no harm.
-  IsEditKey := true;
+  // so a widgetset that still delivers it does no harm. Tab/Shift+Tab indent;
+  // unlike the others their edit is conditional (DoTab reports whether it
+  // changed anything - the console consumes the key but changes nothing).
+  IsEditKey := True;
+  Changed := True;
   case Key of
     VK_BACK:   DeleteBack;
     VK_DELETE: DeleteForward;
     VK_RETURN: NewLine;
-    else begin
-      IsEditKey:= false;
-    end;
+    VK_TAB:    Changed := DoTab(ssShift in Shift);
+  else
+    IsEditKey := False;
   end;
 
   if IsEditKey then begin
-    Key := 0;
-    AfterEdit;
+    Key := 0;                          // consume (Tab too, so it never moves focus)
+    if Changed then
+      AfterEdit;
     Exit;
   end;
 

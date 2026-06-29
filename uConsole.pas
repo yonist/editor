@@ -33,6 +33,7 @@ type
     procedure DeleteBack; override;
     procedure DeleteForward; override;
     procedure NewLine; override;      // Enter -> submit, not a line split
+    function DoTab(ABack: Boolean): Boolean; override;   // consume Tab, do nothing
     procedure MoveUp; override;       // Up/Down don't move the caret; they
     procedure MoveDown; override;     // request history navigation instead
     procedure Paste; override;        // single-line input: strip line breaks
@@ -138,6 +139,11 @@ begin
 
   if Assigned(FOnCommand) then
     FOnCommand(Self, Cmd);
+end;
+
+function TConsole.DoTab(ABack: Boolean): Boolean;
+begin
+  Result := False;   // consume the Tab key but do nothing (for now)
 end;
 
 procedure TConsole.MoveUp;
