@@ -41,6 +41,10 @@ type
   public
     constructor Create(AOwner: TComponent); override;
 
+    // The console is a live terminal, not a document - refuse serialization.
+    procedure SaveToStream(AStream: TStream); override;
+    procedure LoadFromStream(AStream: TStream); override;
+
     // Program -> console: append read-only output (splits embedded newlines).
     procedure Output(const AText: string);
     // Begin a fresh editable input line.
@@ -63,6 +67,16 @@ begin
   inherited Create(AOwner);
   FPrompt := '$ ';
   FInputActive := False;
+end;
+
+procedure TConsole.SaveToStream(AStream: TStream);
+begin
+  raise Exception.Create('TConsole does not support SaveToStream');
+end;
+
+procedure TConsole.LoadFromStream(AStream: TStream);
+begin
+  raise Exception.Create('TConsole does not support LoadFromStream');
 end;
 
 function TConsole.LastLineIndex: Integer;

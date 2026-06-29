@@ -173,6 +173,10 @@ type
     procedure Undo;
     procedure Redo;
 
+    // Content serialization (text only). Virtual: TConsole overrides to refuse.
+    procedure SaveToStream(AStream: TStream); virtual;
+    procedure LoadFromStream(AStream: TStream); virtual;
+
     property Content: TContent read FContent;
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
@@ -813,6 +817,27 @@ end;
 procedure TTextControl.ResetUndo;
 begin
   FUndoMgr.Clear;
+end;
+
+procedure TTextControl.SaveToStream(AStream: TStream);
+begin
+  FContent.SaveToStream(AStream);   // text only; no caret/scroll/selection
+end;
+
+procedure TTextControl.LoadFromStream(AStream: TStream);
+begin
+  FContent.LoadFromStream(AStream);
+
+  // Fresh document: this is a wholesale replacement, not an undoable edit, so it
+  // bypasses the SwapLines funnel and resets the derived state by hand.
+  FUndoMgr.Clear;
+  ClearSelection;
+  HLInvalidate(0);                  // drop the whole highlight cache
+  SetCaret(0, 0);                   // caret at the top of the document
+  RebuildLayout;
+  SyncGoalCol;
+  ReconcileCaret;                   // recompute pixel + scroll the top into view
+  Invalidate;
 end;
 
 { ---- selection resolution for the editing primitives ---- }

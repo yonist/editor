@@ -28,6 +28,10 @@ type
     procedure Insert(AIndex: Integer; const ALine: string);
     procedure Delete(AIndex: Integer);
 
+    // Raw text serialization (UTF-8, no BOM; a UTF-8 BOM is stripped on load).
+    procedure SaveToStream(AStream: TStream);
+    procedure LoadFromStream(AStream: TStream);
+
     property Count: Integer read GetCount;
     property Lines[AIndex: Integer]: string read GetLine write SetLine; default;
     property Text: string read GetText write SetText;
@@ -68,6 +72,37 @@ begin
   FLines.Delete(AIndex);
   if FLines.Count = 0 then
      FLines.Add(''); // Ensures that the content is never empty
+end;
+
+procedure TContent.SaveToStream(AStream: TStream);
+var
+  S: string;
+begin
+  // LCL strings are UTF-8, so the bytes of Text are already UTF-8. No BOM.
+  S := FLines.Text;
+  if Length(S) > 0 then
+    AStream.WriteBuffer(S[1], Length(S));
+end;
+
+procedure TContent.LoadFromStream(AStream: TStream);
+var
+  S: string;
+  N: Integer;
+begin
+  N := AStream.Size - AStream.Position;
+  if N < 0 then
+    N := 0;
+  SetLength(S, N);
+  if N > 0 then
+    AStream.ReadBuffer(S[1], N);
+
+  // Strip a leading UTF-8 BOM (EF BB BF) if present.
+  if (Length(S) >= 3) and (S[1] = #$EF) and (S[2] = #$BB) and (S[3] = #$BF) then
+    System.Delete(S, 1, 3);
+
+  FLines.Text := S;            // parses CR / LF / CRLF line endings
+  if FLines.Count = 0 then
+    FLines.Add('');            // keep the never-empty invariant
 end;
 
 function TContent.GetCount: Integer;

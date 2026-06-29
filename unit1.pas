@@ -5,13 +5,17 @@ unit Unit1;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls,
+  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls, StdCtrls,
   uCodeEditor, uConsole, uHighlighterPython, uHighlighterSQL, uTheme;
 
 type
   TForm1 = class(TForm)
     procedure FormCreate(Sender: TObject);
   private
+    FCommandPanel: TPanel;
+    FThemeCombo: TComboBox;
+    FLoadButton: TButton;
+    FSaveButton: TButton;
     FTopPanel: TPanel;
     FBottomPanel: TPanel;
     FSplitter: TSplitter;
@@ -24,6 +28,9 @@ type
     procedure SeedConsole;
     procedure ConsoleCommand(Sender: TObject; const ACommand: string);
     procedure ConsoleHistory(Sender: TObject; APrevious: Boolean);
+    procedure ThemeChange(Sender: TObject);
+    procedure LoadClick(Sender: TObject);
+    procedure SaveClick(Sender: TObject);
   public
     destructor Destroy; override;
   end;
@@ -44,18 +51,53 @@ end;
 
 procedure TForm1.BuildLayout;
 begin
+  // Command bar across the very top: theme selector + load/save buttons.
+  FCommandPanel := TPanel.Create(Self);
+  FCommandPanel.Parent := Self;
+  FCommandPanel.Align := alTop;
+  FCommandPanel.Height := 60;
+  FCommandPanel.BevelOuter := bvNone;
+
+  FThemeCombo := TComboBox.Create(Self);
+  FThemeCombo.Parent := FCommandPanel;
+  FThemeCombo.Style := csDropDownList;         // selection only, no free text
+  FThemeCombo.Items.Add('Dark');
+  FThemeCombo.Items.Add('Light');
+  FThemeCombo.ItemIndex := 0;                  // matches the controls' default (dark)
+  FThemeCombo.Left := 8;
+  FThemeCombo.Top := 8;
+  FThemeCombo.Width := 120;
+  FThemeCombo.OnChange := @ThemeChange;
+
+  FLoadButton := TButton.Create(Self);
+  FLoadButton.Parent := FCommandPanel;
+  FLoadButton.Caption := 'Load';
+  FLoadButton.Left := 140;
+  FLoadButton.Top := 7;
+  FLoadButton.Width := 80;
+  FLoadButton.OnClick := @LoadClick;
+
+  FSaveButton := TButton.Create(Self);
+  FSaveButton.Parent := FCommandPanel;
+  FSaveButton.Caption := 'Save';
+  FSaveButton.Left := 228;
+  FSaveButton.Top := 7;
+  FSaveButton.Width := 80;
+  FSaveButton.OnClick := @SaveClick;
+
   // Top panel hosts the code editor.
   FTopPanel := TPanel.Create(Self);
   FTopPanel.Parent := Self;
   FTopPanel.Align := alTop;
-  FTopPanel.Height := ClientHeight div 2;
+  FTopPanel.Top := FCommandPanel.Height;       // below the command bar
+  FTopPanel.Height := (ClientHeight - FCommandPanel.Height) div 2;
   FTopPanel.BevelOuter := bvNone;
 
   // Splitter sits just below the top panel and resizes the top/bottom split.
   FSplitter := TSplitter.Create(Self);
   FSplitter.Parent := Self;
   FSplitter.Align := alTop;
-  FSplitter.Top := FTopPanel.Height;   // place it below the top panel
+  FSplitter.Top := FCommandPanel.Height + FTopPanel.Height;
 
   // Bottom panel fills the rest and hosts the console.
   FBottomPanel := TPanel.Create(Self);
@@ -73,7 +115,6 @@ begin
   FConsole.Parent := FBottomPanel;
   FConsole.Align := alClient;
   FConsole.Highlighter := SqlHighlighter;      // SQL console
-  FConsole.ThemeKind := thLight;               // editor stays dark; console light
 end;
 
 procedure TForm1.SeedEditor;
@@ -147,6 +188,43 @@ begin
     FConsole.SetInput('')                   // past the newest entry -> empty line
   else
     FConsole.SetInput(FHistory[FHistoryIndex]);
+end;
+
+procedure TForm1.ThemeChange(Sender: TObject);
+var
+  Kind: TThemeKind;
+begin
+  // Both controls share the selected theme.
+  if FThemeCombo.ItemIndex = 1 then
+    Kind := thLight
+  else
+    Kind := thDark;
+  FEditor.ThemeKind := Kind;
+  FConsole.ThemeKind := Kind;
+end;
+
+procedure TForm1.LoadClick(Sender: TObject);
+var
+  FS: TFileStream;
+begin
+  FS := TFileStream.Create('c:\temp\test.txt', fmOpenRead or fmShareDenyWrite);
+  try
+    FEditor.LoadFromStream(FS);
+  finally
+    FS.Free;
+  end;
+end;
+
+procedure TForm1.SaveClick(Sender: TObject);
+var
+  FS: TFileStream;
+begin
+  FS := TFileStream.Create('c:\temp\test.txt', fmCreate);
+  try
+    FEditor.SaveToStream(FS);
+  finally
+    FS.Free;
+  end;
 end;
 
 destructor TForm1.Destroy;
