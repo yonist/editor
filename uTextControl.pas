@@ -10,6 +10,20 @@ uses
   uTheme;
 
 type
+  { IAutoComplete
+    Implemented by the completion popup and handed to a TTextControl. When it is
+    Active the editor delegates keystrokes to it; the popup reads the editor's
+    prefix and replaces the word on accept. Keeps the two units decoupled. }
+  IAutoComplete = interface
+    ['{B2E9F0A1-1C3D-4E5F-9A7B-3C2D1E0F4A5B}']
+    function Active: Boolean;
+    procedure Trigger;                                                    // Ctrl+Space
+    function HandleKeyDown(var Key: Word; Shift: TShiftState): Boolean;   // consume nav/accept/esc
+    procedure NotifyChanged;                                              // content/caret moved
+    procedure ThemeChanged;                                               // editor theme/font changed
+    procedure Cancel;                                                     // hide
+  end;
+
   { TTextControl
     Common parent for TCodeEditor and TConsole.
     Paints the content with a monospace font and handles basic text input
@@ -55,6 +69,8 @@ type
     FThemeKind: TThemeKind;
     FTabWidth: Integer;            // spaces per Tab when FTabAsSpaces
     FTabAsSpaces: Boolean;         // Tab inserts spaces (True) or a #9 (False)
+    FCompletion: IAutoComplete;    // autocomplete popup (nil = none)
+    function IsWordChar(C: Char): Boolean;
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
@@ -184,7 +200,16 @@ type
     procedure SaveToStream(AStream: TStream); virtual;
     procedure LoadFromStream(AStream: TStream); virtual;
 
+    // Autocomplete support. The editor only exposes the prefix, a word-replace,
+    // the caret position and its theme; the popup does everything else.
+    function WordAtCaret: string;                        // identifier chars left of caret
+    procedure ReplaceWordAtCaret(const AText: string);   // replaces the whole word (undoable)
+    function CaretClientPos: TPoint;                     // caret top-left, client coords
+    function CurrentTheme: TTheme;
+
     property Content: TContent read FContent;
+    property Completion: IAutoComplete read FCompletion write FCompletion;
+    property LineHeight: Integer read FLineHeight;
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
     property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
@@ -222,6 +247,8 @@ begin
   Font.BeginUpdate;
   Font.Name := 'Courier New';
   Font.Size := 18;
+  Font.Quality:= TFontQuality.fqAntialiased;
+  Font.Style:= [fsBold];
   Font.EndUpdate;
 
   TabStop := True;          // allow the control to receive keyboard focus
@@ -280,6 +307,67 @@ end;
 function TTextControl.EditableStart: TPoint;
 begin
   Result := Point(0, 0);
+end;
+
+{ ---- autocomplete support ---- }
+
+function TTextControl.IsWordChar(C: Char): Boolean;
+begin
+  Result := (C = '_') or ((C >= '0') and (C <= '9')) or
+            ((C >= 'A') and (C <= 'Z')) or ((C >= 'a') and (C <= 'z'));
+end;
+
+function TTextControl.WordAtCaret: string;
+var
+  Line: string;
+  Col, StartCol: Integer;
+begin
+  Line := FContent[FCaret.Line];
+  Col := FCaret.Col;                 // 0-based; Line[Col] (1-based) is the char left of it
+  StartCol := Col;
+  while (StartCol > 0) and IsWordChar(Line[StartCol]) do
+    Dec(StartCol);
+  Result := Copy(Line, StartCol + 1, Col - StartCol);
+end;
+
+procedure TTextControl.ReplaceWordAtCaret(const AText: string);
+var
+  Line, NewLine: string;
+  L, StartCol, EndCol: Integer;
+  ES: TPoint;
+begin
+  L := FCaret.Line;
+  Line := FContent[L];
+  StartCol := FCaret.Col;
+  while (StartCol > 0) and IsWordChar(Line[StartCol]) do
+    Dec(StartCol);
+  EndCol := FCaret.Col;
+  while (EndCol < Length(Line)) and IsWordChar(Line[EndCol + 1]) do
+    Inc(EndCol);
+  // Never reach into the read-only region (the console's prompt / locked input).
+  ES := EditableStart;
+  if (L = ES.Y) and (StartCol < ES.X) then
+    StartCol := ES.X;
+  // Replace the whole word [StartCol, EndCol) with AText (a single undo step).
+  NewLine := Copy(Line, 1, StartCol) + AText + Copy(Line, EndCol + 1, MaxInt);
+  ReplaceLines(L, 1, [NewLine], Point(StartCol + Length(AText), L));
+  AfterEdit;
+end;
+
+function TTextControl.CaretClientPos: TPoint;
+begin
+  if FCaretDirty then
+    RecalcCaretPixel;
+  // Content-space pixel minus the scroll offset; X already includes LeftMargin.
+  Result := Point(FCaretContentX, FCaretContentY - ScrollOffsetY);
+end;
+
+function TTextControl.CurrentTheme: TTheme;
+begin
+  if FThemeKind = thDark then
+    Result := DarkTheme
+  else
+    Result := LightTheme;
 end;
 
 { ---- caret pixel cache (C): expensive map runs only when dirty ---- }
@@ -701,6 +789,8 @@ begin
   FColors := ATheme.Syntax;
   FCaret.SetColors(ATheme.Caret, ATheme.Background);   // XOR-drawn against the bg
   SetScrollColors(ATheme.ScrollTrack, ATheme.ScrollThumb);   // inherited
+  if FCompletion <> nil then
+    FCompletion.ThemeChanged;                          // let the popup re-read colours
   Invalidate;
 end;
 
@@ -987,6 +1077,8 @@ begin
   SyncGoalCol;         // a horizontal edit resets the preferred column
   ReconcileCaret;      // recompute the caret pixel once, scroll into view, place
   Invalidate;
+  if (FCompletion <> nil) and FCompletion.Active then
+    FCompletion.NotifyChanged;   // re-filter against the new prefix
 end;
 
 procedure TTextControl.InsertChar(ACh: Char);
@@ -1139,6 +1231,12 @@ var
 begin
   inherited KeyDown(Key, Shift);
 
+  // While the completion popup is up it gets first pick of the keys (Up/Down,
+  // Enter/Tab, Esc); anything it doesn't consume falls through to normal editing.
+  if (FCompletion <> nil) and FCompletion.Active then
+    if FCompletion.HandleKeyDown(Key, Shift) then
+      Exit;
+
   // Ctrl shortcuts. Each handler repaints itself (Cut/Paste/Undo/Redo via
   // AfterEdit; Copy/SelectAll repaint as they change the selection), so this is
   // a pure dispatch with a single consume. An unhandled Ctrl combo falls
@@ -1147,12 +1245,13 @@ begin
   begin
     IsCtrlCmd := True;
     case Key of
-      Ord('C'): CopySelection;
-      Ord('A'): SelectAll;
-      Ord('X'): Cut;
-      Ord('V'): Paste;
-      Ord('Z'): if ssShift in Shift then Redo else Undo;
-      Ord('Y'): Redo;
+      Ord('C'):  CopySelection;
+      Ord('A'):  SelectAll;
+      Ord('X'):  Cut;
+      Ord('V'):  Paste;
+      Ord('Z'):  if ssShift in Shift then Redo else Undo;
+      Ord('Y'):  Redo;
+      VK_SPACE:  if FCompletion <> nil then FCompletion.Trigger;   // Ctrl+Space
     else
       IsCtrlCmd := False;
     end;
@@ -1192,6 +1291,11 @@ begin
            (Key = VK_DOWN) or (Key = VK_HOME) or (Key = VK_END);
   if not IsNav then
     Exit;                            // not a navigation key; leave Key untouched
+
+  // Up/Down are consumed by an active popup above; a caret move (Left/Right/
+  // Home/End) that reaches here means the caret is leaving the word - close it.
+  if (FCompletion <> nil) and FCompletion.Active then
+    FCompletion.Cancel;
 
   Selecting := ssShift in Shift;
 
@@ -1246,6 +1350,9 @@ begin
   inherited MouseDown(Button, Shift, X, Y);   // base may start a scrollbar drag
   if CanFocus then
     SetFocus;
+
+  if (FCompletion <> nil) and FCompletion.Active then
+    FCompletion.Cancel;                        // clicking away closes the popup
 
   // Begin a gesture in the content area (not on the reserved scrollbar strip).
   // We can't yet tell a click from a drag, so defer the caret move to MouseUp
@@ -1478,6 +1585,8 @@ procedure TTextControl.DoExit;
 begin
   inherited DoExit;
   FCaret.Hide;
+  // Note: we do NOT cancel the completion on blur - clicking the popup moves
+  // focus to it, and cancelling here would hide it before the pick registers.
 end;
 
 procedure TTextControl.InitializeWnd;

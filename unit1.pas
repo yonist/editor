@@ -6,9 +6,13 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls, StdCtrls,
-  uCodeEditor, uConsole, uHighlighterPython, uHighlighterSQL, uTheme;
+  uCodeEditor, uConsole, uHighlighterPython, uHighlighterSQL, uTheme,
+  uAutoComplete;
 
 type
+
+  { TForm1 }
+
   TForm1 = class(TForm)
     procedure FormCreate(Sender: TObject);
   private
@@ -16,11 +20,14 @@ type
     FThemeCombo: TComboBox;
     FLoadButton: TButton;
     FSaveButton: TButton;
+    FTestButton: TButton;
     FTopPanel: TPanel;
     FBottomPanel: TPanel;
     FSplitter: TSplitter;
     FEditor: TCodeEditor;
     FConsole: TConsole;
+    FEditorAC: TAutoCompleteControl;
+    FConsoleAC: TAutoCompleteControl;
     FHistory: TStringList;     // submitted commands
     FHistoryIndex: Integer;    // cursor into FHistory (Count = "current empty line")
     procedure BuildLayout;
@@ -31,6 +38,9 @@ type
     procedure ThemeChange(Sender: TObject);
     procedure LoadClick(Sender: TObject);
     procedure SaveClick(Sender: TObject);
+    procedure TestClick(Sender: TObject);
+    procedure EditorComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
+    procedure ConsoleComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
   public
     destructor Destroy; override;
   end;
@@ -85,6 +95,14 @@ begin
   FSaveButton.Width := 80;
   FSaveButton.OnClick := @SaveClick;
 
+  FTestButton := TButton.Create(Self);
+  FTestButton.Parent := FCommandPanel;
+  FTestButton.Caption := 'Test';
+  FTestButton.Left := 318;
+  FTestButton.Top := 7;
+  FTestButton.Width := 80;
+  FTestButton.OnClick := @TestClick;
+
   // Top panel hosts the code editor.
   FTopPanel := TPanel.Create(Self);
   FTopPanel.Parent := Self;
@@ -115,6 +133,19 @@ begin
   FConsole.Parent := FBottomPanel;
   FConsole.Align := alClient;
   FConsole.Highlighter := SqlHighlighter;      // SQL console
+
+  // Autocomplete popups (parented to the form so they can overflow the panes).
+  FEditorAC := TAutoCompleteControl.Create(Self);
+  FEditorAC.Parent := Self;
+  FEditorAC.Editor := FEditor;
+  FEditorAC.OnGetProp := @EditorComplete;
+  FEditor.Completion := FEditorAC;
+
+  FConsoleAC := TAutoCompleteControl.Create(Self);
+  FConsoleAC.Parent := Self;
+  FConsoleAC.Editor := FConsole;
+  FConsoleAC.OnGetProp := @ConsoleComplete;
+  FConsole.Completion := FConsoleAC;
 end;
 
 procedure TForm1.SeedEditor;
@@ -225,6 +256,41 @@ begin
   finally
     FS.Free;
   end;
+end;
+
+procedure TForm1.TestClick(Sender: TObject);
+begin
+  FConsole.Prompt:= 'Dev Shmec';
+end;
+
+procedure TForm1.EditorComplete(Sender: TObject; const APrefix: string;
+  AItems: TStrings);
+const
+  Words: array[0..24] of string = (
+    'def', 'class', 'import', 'from', 'return', 'print', 'range', 'len', 'for',
+    'while', 'if', 'elif', 'else', 'try', 'except', 'finally', 'lambda', 'yield',
+    'with', 'as', 'True', 'False', 'None', 'self', '__init__');
+var
+  i: Integer;
+begin
+  for i := 0 to High(Words) do
+    if (APrefix = '') or SameText(Copy(Words[i], 1, Length(APrefix)), APrefix) then
+      AItems.Add(Words[i]);
+end;
+
+procedure TForm1.ConsoleComplete(Sender: TObject; const APrefix: string;
+  AItems: TStrings);
+const
+  Words: array[0..24] of string = (
+    'SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET',
+    'DELETE', 'CREATE', 'TABLE', 'DROP', 'JOIN', 'INNER', 'LEFT', 'RIGHT',
+    'ORDER', 'BY', 'GROUP', 'HAVING', 'AND', 'OR', 'NOT', 'NULL', 'LIKE');
+var
+  i: Integer;
+begin
+  for i := 0 to High(Words) do
+    if (APrefix = '') or SameText(Copy(Words[i], 1, Length(APrefix)), APrefix) then
+      AItems.Add(Words[i]);
 end;
 
 destructor TForm1.Destroy;
