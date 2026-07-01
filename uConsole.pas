@@ -27,6 +27,7 @@ type
     FOnHistory: TConsoleHistoryEvent;
     function LastLineIndex: Integer;
     function LastLine: string;
+    procedure SetPrompt(AValue: string);
   protected
     function EditableStart: TPoint; override;
     procedure InsertChar(ACh: Char); override;
@@ -55,7 +56,8 @@ type
     // Replace the editable input text (e.g. with a recalled history entry).
     procedure SetInput(const AText: string);
 
-    property Prompt: string read FPrompt write FPrompt;
+    // Assigning Prompt starts a new editable line and renders the new prompt.
+    property Prompt: string read FPrompt write SetPrompt;
     property InputActive: Boolean read FInputActive;
     property OnCommand: TConsoleCommandEvent read FOnCommand write FOnCommand;
     property OnHistory: TConsoleHistoryEvent read FOnHistory write FOnHistory;
@@ -91,6 +93,12 @@ begin
     Result := Content[Content.Count - 1]
   else
     Result := '';
+end;
+
+procedure TConsole.SetPrompt(AValue: string);
+begin
+  FPrompt := AValue;
+  NewPrompt;   // setting the prompt renders it on a fresh input line
 end;
 
 function TConsole.EditableStart: TPoint;
