@@ -30,10 +30,14 @@ type
     FConsoleAC: TAutoCompleteControl;
     FHistory: TStringList;     // submitted commands
     FHistoryIndex: Integer;    // cursor into FHistory (Count = "current empty line")
+    FAsyncTimer: TTimer;       // simulates a slow async command
+    FAsyncCommand: string;     // command awaiting its async result
     procedure BuildLayout;
     procedure SeedEditor;
     procedure SeedConsole;
-    procedure ConsoleCommand(Sender: TObject; const ACommand: string);
+    function ConsoleCommand(Sender: TObject; const ACommand: string): TConsoleCommandMode;
+    procedure AsyncDone(Sender: TObject);
+    procedure ConsoleCancel(Sender: TObject; const ACommand: string);
     procedure ConsoleHistory(Sender: TObject; APrevious: Boolean);
     procedure ThemeChange(Sender: TObject);
     procedure LoadClick(Sender: TObject);
@@ -180,23 +184,54 @@ begin
   FHistory := TStringList.Create;
   FHistoryIndex := 0;
 
+  FAsyncTimer := TTimer.Create(Self);
+  FAsyncTimer.Enabled := False;
+  FAsyncTimer.Interval := 2000;                 // pretend the work takes 2s
+  FAsyncTimer.OnTimer := @AsyncDone;
+
   FConsole.OnCommand := @ConsoleCommand;
   FConsole.OnHistory := @ConsoleHistory;
+  FConsole.OnCancelCommand := @ConsoleCancel;
   FConsole.Output('TConsole - terminal control. Type a command and press Enter.');
+  FConsole.Output('Type "async" to see a spinner while a slow command runs.');
   FConsole.NewPrompt;
 end;
 
-procedure TForm1.ConsoleCommand(Sender: TObject; const ACommand: string);
+function TForm1.ConsoleCommand(Sender: TObject;
+  const ACommand: string): TConsoleCommandMode;
 begin
   // Remember the command, then reset the history cursor past the newest entry.
   if ACommand <> '' then
     FHistory.Add(ACommand);
   FHistoryIndex := FHistory.Count;
 
-  // Host-driven: print a response, then show the next prompt.
+  // "async": kick off slow work and let the console spin until AsyncDone fires.
+  if SameText(ACommand, 'async') then
+  begin
+    FAsyncCommand := ACommand;
+    FAsyncTimer.Enabled := True;
+    Result := ccAsync;                          // console shows the spinner
+    Exit;
+  end;
+
+  // Synchronous: print a response now and show the next prompt ourselves.
   if ACommand <> '' then
     FConsole.Output('you typed: ' + ACommand + #13#10 + 'Good for you!');
   FConsole.NewPrompt;
+  Result := ccSync;
+end;
+
+procedure TForm1.AsyncDone(Sender: TObject);
+begin
+  FAsyncTimer.Enabled := False;                 // one-shot
+  FConsole.CommandResult('async result for: ' + FAsyncCommand);
+end;
+
+procedure TForm1.ConsoleCancel(Sender: TObject; const ACommand: string);
+begin
+  // Host's choice: abort the simulated work and close out the command.
+  FAsyncTimer.Enabled := False;
+  FConsole.CommandResult('^C  cancelled: ' + ACommand);
 end;
 
 procedure TForm1.ConsoleHistory(Sender: TObject; APrevious: Boolean);

@@ -109,6 +109,7 @@ type
     procedure ApplyTheme(const ATheme: TTheme);
     procedure SetThemeKind(AValue: TThemeKind);
   protected
+    function HasSelection: Boolean;
     // Block content mutation - the single choke point (editing, undo/redo, and
     // the console's programmatic appends all route through here), so it is also
     // where the highlight cache is invalidated. Protected for subclasses.
@@ -122,6 +123,10 @@ type
     procedure Resize; override;
     procedure KeyPress(var Key: Char); override;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    // Single gate for keyboard input. When it returns False the key is swallowed
+    // by KeyDown before any dispatch. Base is always editable; TConsole locks it
+    // while input is inactive (between commands / awaiting an async result).
+    function AcceptsKey(Key: Word; Shift: TShiftState): Boolean; virtual;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
     procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
@@ -173,6 +178,9 @@ type
 
     // Re-wrap, reposition the caret and repaint after content changes.
     procedure RefreshView;
+
+    // Scroll so the last visual row is visible (independent of the caret).
+    procedure ScrollBottomIntoView;
 
     // Caret navigation - virtual so subclasses (e.g. TConsole) can restrict or
     // repurpose individual directions. Up/Down move by visual row.
@@ -434,6 +442,16 @@ begin
   Invalidate;
 end;
 
+procedure TTextControl.ScrollBottomIntoView;
+var
+  Bottom: Integer;
+begin
+  if (FLayout = nil) or (FLineHeight <= 0) then
+    Exit;
+  Bottom := FLayout.Count * FLineHeight;      // pixel bottom of the last row
+  ScrollIntoView(Bottom - FLineHeight, Bottom);
+end;
+
 { ---- selection + clipboard ---- }
 
 procedure TTextControl.ClearSelection;
@@ -474,6 +492,11 @@ begin
     Exit;
   Clipboard.AsText := SelectedText;
   ClearSelection;        // copy consumes the selection (and repaints)
+end;
+
+function TTextControl.HasSelection: Boolean;
+begin
+  Result := not FSelection.IsEmpty;
 end;
 
 procedure TTextControl.SelectAll;
@@ -1224,12 +1247,25 @@ begin
   AfterEdit;
 end;
 
+function TTextControl.AcceptsKey(Key: Word; Shift: TShiftState): Boolean;
+begin
+  Result := True;   // the base control is always editable
+end;
+
 procedure TTextControl.KeyDown(var Key: Word; Shift: TShiftState);
 var
   Selecting, IsNav, IsEditKey, IsCtrlCmd, Changed: Boolean;
   SLine, SCol, ELine, ECol: Integer;
 begin
   inherited KeyDown(Key, Shift);
+
+  // One choke point: if the control is locked for this key, swallow it here so
+  // nothing downstream (popup, Ctrl commands, editing, navigation) can run.
+  if not AcceptsKey(Key, Shift) then
+  begin
+    Key := 0;
+    Exit;
+  end;
 
   // While the completion popup is up it gets first pick of the keys (Up/Down,
   // Enter/Tab, Esc); anything it doesn't consume falls through to normal editing.

@@ -5,12 +5,19 @@ unit uConsole;
 interface
 
 uses
-  Classes, SysUtils, Types, Clipbrd, uTextControl, uContent;
+  Classes, SysUtils, Types, LCLType, Clipbrd, uTextControl, uContent, uConsoleSpinner;
 
 type
-  TConsoleCommandEvent = procedure(Sender: TObject; const ACommand: string) of object;
+  // The host returns the mode from OnCommand: ccSync means it already produced
+  // output and called NewPrompt; ccAsync means it will call CommandResult later
+  // (the console spins and waits in the meantime).
+  TConsoleCommandMode = (ccSync, ccAsync);
+  TConsoleCommandEvent = function(Sender: TObject; const ACommand: string): TConsoleCommandMode of object;
   // APrevious = True -> older entry (Up); False -> newer entry (Down).
   TConsoleHistoryEvent = procedure(Sender: TObject; APrevious: Boolean) of object;
+  // Raised when the user asks to cancel a running async command (Ctrl+C with no
+  // selection). The host may ignore it or finish the command via CommandResult.
+  TConsoleCancelEvent = procedure(Sender: TObject; const ACommand: string) of object;
 
   { TConsole
     A console/terminal control: an append-only scrollback of read-only history
@@ -25,10 +32,21 @@ type
     FInputActive: Boolean;            // between NewPrompt and the next Enter
     FOnCommand: TConsoleCommandEvent;
     FOnHistory: TConsoleHistoryEvent;
+    FOnCancelCommand: TConsoleCancelEvent;
+    FSpinner: TConsoleSpinner;
+    FSpinnerType: TConsoleSpinnerType;
+    FAwaitingResult: Boolean;         // async command in flight (spinner running)
+    FRunningCommand: string;          // the command currently awaiting a result
+    FSpinnerLine: Integer;            // content line the spinner animates on (-1 = none)
     function LastLineIndex: Integer;
     function LastLine: string;
     procedure SetPrompt(AValue: string);
+    procedure SpinnerWrite(const AText: unicodestring; const rewriteLine: Boolean);
+    procedure StartSpinner;
+    procedure StopSpinner;
   protected
+    procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    function AcceptsKey(Key: Word; Shift: TShiftState): Boolean; override;
     function EditableStart: TPoint; override;
     procedure InsertChar(ACh: Char); override;
     procedure DeleteBack; override;
@@ -42,6 +60,7 @@ type
     procedure PositionCaretFromMouse(X, Y: Integer); override;
   public
     constructor Create(AOwner: TComponent); override;
+    destructor Destroy; override;
 
     // The console is a live terminal, not a document - refuse serialization.
     procedure SaveToStream(AStream: TStream); override;
@@ -55,12 +74,21 @@ type
     function CurrentInput: string;
     // Replace the editable input text (e.g. with a recalled history entry).
     procedure SetInput(const AText: string);
+    // Async-command completion: the host calls this when its work finishes. It
+    // stops the spinner, prints the result, and shows a new prompt.
+    procedure CommandResult(const AResult: string);
 
     // Assigning Prompt starts a new editable line and renders the new prompt.
     property Prompt: string read FPrompt write SetPrompt;
     property InputActive: Boolean read FInputActive;
+    // True while an async command is in flight (spinner running).
+    property AwaitingResult: Boolean read FAwaitingResult;
+    property SpinnerType: TConsoleSpinnerType read FSpinnerType write FSpinnerType;
     property OnCommand: TConsoleCommandEvent read FOnCommand write FOnCommand;
     property OnHistory: TConsoleHistoryEvent read FOnHistory write FOnHistory;
+    // Ctrl+C during an async command (with nothing selected). The host decides:
+    // ignore, or wrap it up with CommandResult.
+    property OnCancelCommand: TConsoleCancelEvent read FOnCancelCommand write FOnCancelCommand;
   end;
 
 implementation
@@ -70,6 +98,15 @@ begin
   inherited Create(AOwner);
   FPrompt := '$ ';
   FInputActive := False;
+  FSpinnerType := csClock;
+  FSpinnerLine := -1;
+  FSpinner := TConsoleSpinner.Create(SpinnerWrite);
+end;
+
+destructor TConsole.Destroy;
+begin
+  FSpinner.Free;   // its destructor stops/frees the timer
+  inherited Destroy;
 end;
 
 procedure TConsole.SaveToStream(AStream: TStream);
@@ -99,6 +136,18 @@ procedure TConsole.SetPrompt(AValue: string);
 begin
   FPrompt := AValue;
   NewPrompt;   // setting the prompt renders it on a fresh input line
+end;
+
+function TConsole.AcceptsKey(Key: Word; Shift: TShiftState): Boolean;
+begin
+  if FInputActive then
+    Exit(True);                         // normal editing while the prompt is live
+
+  // Locked (between commands, or awaiting an async result): swallow everything
+  // that could mutate content or open the completion popup. Read-only copy
+  // conveniences stay available so the user can grab scrollback.
+  Result := (ssCtrl in Shift) and
+            ((Key = Ord('C')) or (Key = Ord('A')) or (Key = VK_INSERT));
 end;
 
 function TConsole.EditableStart: TPoint;
@@ -137,6 +186,7 @@ end;
 procedure TConsole.NewLine;
 var
   Cmd: string;
+  Mode: TConsoleCommandMode;
 begin
   if not FInputActive then
     Exit;
@@ -145,8 +195,81 @@ begin
   FInputActive := False;              // lock input; the host shows the next prompt
   ResetUndo;                          // the submitted line is now immutable history
 
+  // The host decides per command whether it answered synchronously (it already
+  // called Output/NewPrompt) or will deliver a result later via CommandResult.
+  Mode := ccSync;
   if Assigned(FOnCommand) then
-    FOnCommand(Self, Cmd);
+    Mode := FOnCommand(Self, Cmd);
+
+  if Mode = ccAsync then
+  begin
+    FAwaitingResult := True;
+    FRunningCommand := Cmd;            // remembered for a possible cancel
+    StartSpinner;
+  end;
+end;
+
+procedure TConsole.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+  // While awaiting an async result, Ctrl+C with nothing selected is a cancel
+  // request (there's nothing to copy). Hand it to the host and consume the key;
+  // Ctrl+C with a selection still copies (falls through to the base).
+  if FAwaitingResult and (ssCtrl in Shift) and (Key = Ord('C')) and
+     not HasSelection then
+  begin
+    Key := 0;
+    if Assigned(FOnCancelCommand) then
+      FOnCancelCommand(Self, FRunningCommand);
+    Exit;
+  end;
+  inherited KeyDown(Key, Shift);
+end;
+
+procedure TConsole.SpinnerWrite(const AText: unicodestring;
+  const rewriteLine: Boolean);
+begin
+  if rewriteLine and (FSpinnerLine >= 0) then
+  begin
+    SwapLines(FSpinnerLine, 1, [string(AText)]);      // animate in place
+    RefreshView;
+  end
+  else
+  begin
+    SwapLines(Content.Count, 0, [string(AText)]);     // append the spinner line
+    FSpinnerLine := LastLineIndex;                    // remember it for rewrites
+    RefreshView;
+    ScrollBottomIntoView;                             // bring the new line into view
+  end;
+end;
+
+procedure TConsole.StartSpinner;
+begin
+  FSpinnerLine := -1;                 // next SpinnerWrite appends a fresh line
+  FSpinner.Start(FSpinnerType);
+end;
+
+procedure TConsole.StopSpinner;
+begin
+  if FSpinner.IsActive then
+    FSpinner.Stop;
+  if FSpinnerLine >= 0 then
+  begin
+    SwapLines(FSpinnerLine, 1, []);   // remove the transient spinner line
+    FSpinnerLine := -1;
+    RefreshView;
+  end;
+end;
+
+procedure TConsole.CommandResult(const AResult: string);
+begin
+  if not FAwaitingResult then
+    Exit;                             // ignore late / duplicate results
+  FAwaitingResult := False;
+  FRunningCommand := '';
+  StopSpinner;
+  if AResult <> '' then
+    Output(AResult);
+  NewPrompt;
 end;
 
 function TConsole.DoTab(ABack: Boolean): Boolean;
