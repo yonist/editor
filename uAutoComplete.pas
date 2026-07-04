@@ -182,6 +182,11 @@ begin
   if FEditor = nil then
     Exit;
   Prefix := FEditor.WordAtCaret;
+  if Prefix = '' then                 // need at least one typed char to open
+  begin
+    Cancel;
+    Exit;
+  end;
 
   Items.BeginUpdate;
   try
@@ -208,7 +213,7 @@ end;
 procedure TAutoCompleteControl.PositionNearCaret;
 var
   P, Q: TPoint;
-  H: Integer;
+  H, LineTop, Y: Integer;
 begin
   P := FEditor.CaretClientPos;        // client coords in the editor
   Inc(P.Y, FEditor.LineHeight);       // drop below the caret line
@@ -221,7 +226,17 @@ begin
   if Q.X < 0 then
     Q.X := 0;
 
-  SetBounds(Q.X, Q.Y, FWidthPx, H);
+  // Prefer dropping below the caret line; if that runs past the form's bottom
+  // (e.g. a console docked at the bottom), flip up above the caret line instead.
+  LineTop := Q.Y - FEditor.LineHeight;      // parent-coord top of the caret line
+  if Q.Y + H <= Parent.ClientHeight then
+    Y := Q.Y                                // fits below
+  else
+    Y := LineTop - H;                       // flip above
+  if Y < 0 then
+    Y := 0;                                 // last resort: popup taller than space
+
+  SetBounds(Q.X, Y, FWidthPx, H);
 end;
 
 procedure TAutoCompleteControl.DoResult;
