@@ -105,7 +105,7 @@ end;
 
 destructor TConsole.Destroy;
 begin
-  FSpinner.Free;   // its destructor stops/frees the timer
+  FSpinner.Free;   // its destructor frees the timer
   inherited Destroy;
 end;
 

@@ -56,11 +56,10 @@ end;
 
 constructor TConsoleSpinner.Create(const aWriteCallback: TWriteCallback);
 begin
+  inherited Create;
   FActive := False;
   FTimer := TTimer.Create(nil);
   FTimer.Enabled := False;
-  // The default is true for some reason.. so it cause all sorts of problems
-  FTimer.OnTimer := WriteSpinner;
   FTimer.Interval := 100;
 
   if not Assigned(aWriteCallback) then
@@ -70,7 +69,7 @@ end;
 
 destructor TConsoleSpinner.Destroy();
 begin
-  FreeAndNil(FTimer);
+  FTimer.Free;   // TTimer.Destroy kills the OS timer; nil-safe if ctor half-failed
   inherited;
 end;
 

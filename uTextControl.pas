@@ -69,7 +69,13 @@ type
     FThemeKind: TThemeKind;
     FTabWidth: Integer;            // spaces per Tab when FTabAsSpaces
     FTabAsSpaces: Boolean;         // Tab inserts spaces (True) or a #9 (False)
-    FCompletion: IAutoComplete;    // autocomplete popup (nil = none)
+    // Non-owning reference to the autocomplete popup (nil = none). Stored as a
+    // raw Pointer, NOT an interface field, so the compiler never emits an
+    // _AddRef/_Release: the popup's lifetime is the host's business, and this
+    // reference must never influence (or be finalized during) teardown.
+    FCompletion: Pointer;
+    function GetCompletion: IAutoComplete;
+    procedure SetCompletion(const AValue: IAutoComplete);
     function IsWordChar(C: Char): Boolean;
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
@@ -216,7 +222,7 @@ type
     function CurrentTheme: TTheme;
 
     property Content: TContent read FContent;
-    property Completion: IAutoComplete read FCompletion write FCompletion;
+    property Completion: IAutoComplete read GetCompletion write SetCompletion;
     property LineHeight: Integer read FLineHeight;
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
@@ -376,6 +382,18 @@ begin
     Result := DarkTheme
   else
     Result := LightTheme;
+end;
+
+function TTextControl.GetCompletion: IAutoComplete;
+begin
+  // Reinterpret the raw pointer as the interface. No _AddRef happens on the
+  // stored reference; callers only reach here while the popup is alive.
+  Result := IAutoComplete(FCompletion);
+end;
+
+procedure TTextControl.SetCompletion(const AValue: IAutoComplete);
+begin
+  FCompletion := Pointer(AValue);   // store without owning / ref-counting
 end;
 
 { ---- caret pixel cache (C): expensive map runs only when dirty ---- }
@@ -813,7 +831,7 @@ begin
   FCaret.SetColors(ATheme.Caret, ATheme.Background);   // XOR-drawn against the bg
   SetScrollColors(ATheme.ScrollTrack, ATheme.ScrollThumb);   // inherited
   if FCompletion <> nil then
-    FCompletion.ThemeChanged;                          // let the popup re-read colours
+    Completion.ThemeChanged;                          // let the popup re-read colours
   Invalidate;
 end;
 
@@ -1100,8 +1118,8 @@ begin
   SyncGoalCol;         // a horizontal edit resets the preferred column
   ReconcileCaret;      // recompute the caret pixel once, scroll into view, place
   Invalidate;
-  if (FCompletion <> nil) and FCompletion.Active then
-    FCompletion.NotifyChanged;   // re-filter against the new prefix
+  if (FCompletion <> nil) and Completion.Active then
+    Completion.NotifyChanged;   // re-filter against the new prefix
 end;
 
 procedure TTextControl.InsertChar(ACh: Char);
@@ -1269,8 +1287,8 @@ begin
 
   // While the completion popup is up it gets first pick of the keys (Up/Down,
   // Enter/Tab, Esc); anything it doesn't consume falls through to normal editing.
-  if (FCompletion <> nil) and FCompletion.Active then
-    if FCompletion.HandleKeyDown(Key, Shift) then
+  if (FCompletion <> nil) and Completion.Active then
+    if Completion.HandleKeyDown(Key, Shift) then
       Exit;
 
   // Ctrl shortcuts. Each handler repaints itself (Cut/Paste/Undo/Redo via
@@ -1287,7 +1305,7 @@ begin
       Ord('V'):  Paste;
       Ord('Z'):  if ssShift in Shift then Redo else Undo;
       Ord('Y'):  Redo;
-      VK_SPACE:  if FCompletion <> nil then FCompletion.Trigger;   // Ctrl+Space
+      VK_SPACE:  if FCompletion <> nil then Completion.Trigger;   // Ctrl+Space
     else
       IsCtrlCmd := False;
     end;
@@ -1330,8 +1348,8 @@ begin
 
   // Up/Down are consumed by an active popup above; a caret move (Left/Right/
   // Home/End) that reaches here means the caret is leaving the word - close it.
-  if (FCompletion <> nil) and FCompletion.Active then
-    FCompletion.Cancel;
+  if (FCompletion <> nil) and Completion.Active then
+    Completion.Cancel;
 
   Selecting := ssShift in Shift;
 
@@ -1387,8 +1405,8 @@ begin
   if CanFocus then
     SetFocus;
 
-  if (FCompletion <> nil) and FCompletion.Active then
-    FCompletion.Cancel;                        // clicking away closes the popup
+  if (FCompletion <> nil) and Completion.Active then
+    Completion.Cancel;                        // clicking away closes the popup
 
   // Begin a gesture in the content area (not on the reserved scrollbar strip).
   // We can't yet tell a click from a drag, so defer the caret move to MouseUp

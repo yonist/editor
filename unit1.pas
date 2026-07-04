@@ -330,6 +330,8 @@ end;
 
 destructor TForm1.Destroy;
 begin
+  if Assigned(FAsyncTimer) then
+    FAsyncTimer.Enabled := False;   // stop a stray tick during teardown
   FHistory.Free;
   inherited Destroy;
 end;
