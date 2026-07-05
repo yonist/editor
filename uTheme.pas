@@ -20,6 +20,9 @@ type
     Caret:       TColor;
     ScrollTrack: TColor;
     ScrollThumb: TColor;
+    GutterBack:  TColor;        // line-number strip background
+    GutterFore:  TColor;        // line-number text
+    GutterSep:   TColor;        // gutter/text separator line
     Syntax:      TSyntaxColors;
   end;
 
@@ -31,6 +34,9 @@ const
     Caret:       clBlack;
     ScrollTrack: $00F0F0F0;     // RGB(240,240,240)
     ScrollThumb: $00CDCDCD;     // RGB(205,205,205)
+    GutterBack:  $00F5F5F5;     // RGB(245,245,245)
+    GutterFore:  $00999999;     // RGB(153,153,153)
+    GutterSep:   $00E0E0E0;     // RGB(224,224,224)
     Syntax: (
       clBlack,   // tkText
       clBlue,    // tkKeyword
@@ -49,6 +55,9 @@ const
     Caret:       $00DCDCDC;     // RGB(220,220,220)
     ScrollTrack: $002D2D2D;     // RGB(45,45,45)
     ScrollThumb: $00505050;     // RGB(80,80,80)
+    GutterBack:  $001E1E1E;     // RGB(30,30,30)   - matches the editor bg
+    GutterFore:  $00B0B0B0;     // RGB(176,176,176)
+    GutterSep:   $00595959;     // RGB(89,89,89)
     Syntax: (
       $00D4D4D4, // tkText        RGB(212,212,212)
       $00D69C56, // tkKeyword     RGB(86,156,214)

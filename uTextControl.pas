@@ -7,7 +7,7 @@ interface
 uses
   Classes, SysUtils, Types, Controls, Graphics, Math, LCLType, Clipbrd,
   uScrollControl, uContent, uCaret, uLayout, uSelection, uUndo, uHighlighter,
-  uTheme;
+  uTheme, uGutter;
 
 type
   { IAutoComplete
@@ -46,7 +46,8 @@ type
     FWordWrap: Boolean;
     FCharWidth: Integer;     // monospace cell width, px (cached)
     FLineHeight: Integer;    // row height, px (cached)
-    FLeftMargin: Integer;    // left inset before column 0, px
+    FLeftMargin: Integer;    // left inset before column 0, px (gap after the gutter)
+    FGutter: TGutter;        // left line-number strip (owns its width + drawing)
     FCaretFollowPending: Boolean;  // SetPosition requested before viewport was ready
     FGoalCol: Integer;             // preferred visual column for vertical navigation
     FCaretContentX: Integer;       // caret pixel in content space (cached)
@@ -91,6 +92,9 @@ type
     procedure CaretChanged(Sender: TObject);
     procedure SetWordWrap(AValue: Boolean);
     procedure SetLeftMargin(AValue: Integer);
+    function TextLeft: Integer;               // x of column 0 = gutter width + margin
+    function GetShowGutter: Boolean;
+    procedure SetShowGutter(AValue: Boolean);
     procedure CopySelection;
     function SelectedText: string;
     procedure SelectAll;
@@ -227,6 +231,7 @@ type
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
     property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
+    property ShowGutter: Boolean read GetShowGutter write SetShowGutter;
     property Highlighter: THighlighter read FHighlighter write SetHighlighter;
     property Colors: TSyntaxColors read FColors write FColors;
     property ThemeKind: TThemeKind read FThemeKind write SetThemeKind;
@@ -248,8 +253,9 @@ begin
   FCaret.OnChange := CaretChanged;   // SetPosition must keep the caret in view
   FSelection := TSelection.Create;
   FUndoMgr := TUndoManager.Create;
+  FGutter := TGutter.Create;         // hidden by default; RebuildLayout reads its width
   FWordWrap := True;
-  FLeftMargin := 4;
+  FLeftMargin := 10;
   FCaretDirty := True;
   FTabWidth := 4;
   FTabAsSpaces := True;
@@ -274,6 +280,7 @@ destructor TTextControl.Destroy;
 begin
   FUndoMgr.Free;
   FSelection.Free;
+  FGutter.Free;
   FCaret.Free;
   FLayout.Free;
   FContent.Free;
@@ -414,7 +421,7 @@ begin
     Exit;
 
   Row := FLayout[Vr];
-  FCaretContentX := FLeftMargin + (FCaret.Col - Row.StartCol) * FCharWidth;
+  FCaretContentX := TextLeft + (FCaret.Col - Row.StartCol) * FCharWidth;
   FCaretContentY := Vr * FLineHeight;
   FCaretDirty := False;              // cleared only on a successful map
 end;
@@ -740,7 +747,7 @@ begin
   if ATo <= AFrom then
     Exit;
   Canvas.Font.Color := AColor;
-  Canvas.TextOut(FLeftMargin + (AFrom - ARowStart) * FCharWidth, AYp,
+  Canvas.TextOut(TextLeft + (AFrom - ARowStart) * FCharWidth, AYp,
     Copy(FContent[ALine], AFrom + 1, ATo - AFrom));
 end;
 
@@ -805,8 +812,8 @@ begin
   // selection foreground inside.
   Canvas.Brush.Style := bsSolid;
   Canvas.Brush.Color := FSelBack;
-  Canvas.FillRect(Rect(FLeftMargin + (C0 - ARow.StartCol) * FCharWidth, AYp,
-                       FLeftMargin + (C1 - ARow.StartCol) * FCharWidth, AYp + FLineHeight));
+  Canvas.FillRect(Rect(TextLeft + (C0 - ARow.StartCol) * FCharWidth, AYp,
+                       TextLeft + (C1 - ARow.StartCol) * FCharWidth, AYp + FLineHeight));
   Canvas.Brush.Style := bsClear;
 
   if FHighlighter <> nil then
@@ -829,6 +836,7 @@ begin
   FSelFore := ATheme.SelFore;
   FColors := ATheme.Syntax;
   FCaret.SetColors(ATheme.Caret, ATheme.Background);   // XOR-drawn against the bg
+  FGutter.SetColors(ATheme.GutterBack, ATheme.GutterFore, ATheme.GutterSep);
   SetScrollColors(ATheme.ScrollTrack, ATheme.ScrollThumb);   // inherited
   if FCompletion <> nil then
     Completion.ThemeChanged;                          // let the popup re-read colours
@@ -1502,9 +1510,9 @@ begin
   if FCharWidth > 0 then
   begin
     if SnapToNearest then
-      Off := (X - FLeftMargin + FCharWidth div 2) div FCharWidth
+      Off := (X - TextLeft + FCharWidth div 2) div FCharWidth
     else
-      Off := (X - FLeftMargin) div FCharWidth;
+      Off := (X - TextLeft) div FCharWidth;
   end
   else
     Off := 0;
@@ -1561,9 +1569,13 @@ procedure TTextControl.RebuildLayout;
 var
   Cols: Integer;
 begin
+  // The gutter width depends only on the line count, so recompute it here (before
+  // the wrap width) - no gutter<->layout feedback loop.
+  FGutter.Recalc(FContent.Count, FCharWidth);
+
   if FCharWidth > 0 then
-    // The left margin steals columns from the text area.
-    Cols := Max(1, (ViewportWidth - FLeftMargin) div FCharWidth)
+    // The gutter + left margin steal columns from the text area.
+    Cols := Max(1, (ViewportWidth - TextLeft) div FCharWidth)
   else
     Cols := 1;
 
@@ -1614,6 +1626,27 @@ begin
     Exit;
   FLeftMargin := AValue;
   RebuildLayout;        // the margin changes the wrap width
+  RefreshCaret;         // and the caret's content-space pixel
+  Invalidate;
+end;
+
+function TTextControl.TextLeft: Integer;
+begin
+  // X of column 0. The gutter (0 wide when hidden) sits left of the margin.
+  Result := FGutter.Width + FLeftMargin;
+end;
+
+function TTextControl.GetShowGutter: Boolean;
+begin
+  Result := FGutter.Visible;
+end;
+
+procedure TTextControl.SetShowGutter(AValue: Boolean);
+begin
+  if FGutter.Visible = AValue then
+    Exit;
+  FGutter.Visible := AValue;
+  RebuildLayout;        // toggling the gutter changes the text origin + wrap width
   RefreshCaret;         // and the caret's content-space pixel
   Invalidate;
 end;
@@ -1726,6 +1759,11 @@ begin
   // its immutable scrollback by overriding EvictTokens).
   if (FHighlighter <> nil) and (LLast >= LFirst) then
     EvictTokens(LFirst, LLast);
+
+  // Gutter (line numbers) over the reserved strip on the left. No-op when hidden.
+  if FLineHeight > 0 then
+    FGutter.Draw(Canvas, FLayout, First, Last, FLineHeight, ScrollOffsetY,
+      ClientHeight);
 
   // Reposition and restore the caret (recomputes pixel only if marked dirty).
   RefreshCaret;

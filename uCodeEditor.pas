@@ -9,11 +9,19 @@ uses
 
 type
   { TCodeEditor
-    A code editor control. For now it adds nothing on top of TTextControl:
-    it simply prints its content to the client area. }
+    A code editor control. On top of TTextControl it shows the line-number
+    gutter by default. }
   TCodeEditor = class(TTextControl)
+  public
+    constructor Create(AOwner: TComponent); override;
   end;
 
 implementation
+
+constructor TCodeEditor.Create(AOwner: TComponent);
+begin
+  inherited Create(AOwner);
+  ShowGutter := True;
+end;
 
 end.
