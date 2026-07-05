@@ -29,6 +29,7 @@ type
     FMinDigits: Integer;      // floor on digit count so the width doesn't jitter
     FLeftPad: Integer;        // px inset on the left of the strip
     FRightPad: Integer;       // px inset between the number and the separator
+    FInterval: Integer;       // print the number every Nth line; dots in between (1 = every line)
     function DigitCount(AValue: Integer): Integer;
   public
     constructor Create;
@@ -50,6 +51,9 @@ type
 
     property Visible: Boolean read FVisible write FVisible;
     property Width: Integer read FWidth;
+    // Print the actual number only on every Nth line; other lines get a centered
+    // placeholder dot. 1 (the default) prints every line number.
+    property Interval: Integer read FInterval write FInterval;
   end;
 
 implementation
@@ -61,6 +65,7 @@ begin
   FMinDigits := 4;
   FLeftPad := 6;
   FRightPad := 12;   // gap between the number and the separator line
+  FInterval := 5;    // every line numbered by default
 end;
 
 procedure TGutter.SetColors(ABack, AFore, ASeparator: TColor);
@@ -100,8 +105,10 @@ end;
 
 procedure TGutter.Draw(ACanvas: TCanvas; ALayout: TLayout;
   AFirst, ALast, ALineHeight, AScrollOffsetY, AClientHeight: Integer);
+const
+  DotChar = #$C2#$B7;                  // U+00B7 MIDDLE DOT, UTF-8 encoded
 var
-  i, Yp: Integer;
+  i, Yp, LineNo: Integer;
   Row: TVisualRow;
   S: string;
 begin
@@ -126,9 +133,18 @@ begin
     Row := ALayout[i];
     if Row.StartCol <> 0 then
       Continue;                        // wrapped continuation row -> no number
-    S := IntToStr(Row.LogicalLine + 1);
+    LineNo := Row.LogicalLine + 1;     // line numbers are 1-based
     Yp := i * ALineHeight - AScrollOffsetY;
-    ACanvas.TextOut(FWidth - FRightPad - System.Length(S) * FCharWidth, Yp, S);
+    if ((FInterval > 1) and (LineNo mod FInterval <> 0)) and (LineNo <> 1) then
+      // Off-interval line: a centered placeholder dot instead of the number.
+      ACanvas.TextOut(
+        FLeftPad + ((FWidth - FLeftPad - FRightPad) - FCharWidth) div 2, Yp, DotChar)
+    else
+    begin
+      // Number, right-aligned against the separator gap.
+      S := IntToStr(LineNo);
+      ACanvas.TextOut(FWidth - FRightPad - System.Length(S) * FCharWidth, Yp, S);
+    end;
   end;
 end;
 

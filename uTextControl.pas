@@ -95,6 +95,8 @@ type
     function TextLeft: Integer;               // x of column 0 = gutter width + margin
     function GetShowGutter: Boolean;
     procedure SetShowGutter(AValue: Boolean);
+    function GetGutterInterval: Integer;
+    procedure SetGutterInterval(AValue: Integer);
     procedure CopySelection;
     function SelectedText: string;
     procedure SelectAll;
@@ -232,6 +234,8 @@ type
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
     property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
     property ShowGutter: Boolean read GetShowGutter write SetShowGutter;
+    // Number every Nth line; the rest show a centered dot. 1 = every line.
+    property GutterInterval: Integer read GetGutterInterval write SetGutterInterval;
     property Highlighter: THighlighter read FHighlighter write SetHighlighter;
     property Colors: TSyntaxColors read FColors write FColors;
     property ThemeKind: TThemeKind read FThemeKind write SetThemeKind;
@@ -1648,6 +1652,23 @@ begin
   FGutter.Visible := AValue;
   RebuildLayout;        // toggling the gutter changes the text origin + wrap width
   RefreshCaret;         // and the caret's content-space pixel
+  Invalidate;
+end;
+
+function TTextControl.GetGutterInterval: Integer;
+begin
+  Result := FGutter.Interval;
+end;
+
+procedure TTextControl.SetGutterInterval(AValue: Integer);
+begin
+  if AValue < 1 then
+    AValue := 1;
+  if FGutter.Interval = AValue then
+    Exit;
+  FGutter.Interval := AValue;
+  // The gutter width still tracks the largest line number, so no re-wrap - just
+  // repaint with the new number/dot pattern.
   Invalidate;
 end;
 
