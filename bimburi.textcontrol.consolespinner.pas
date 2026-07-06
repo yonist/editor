@@ -1,4 +1,4 @@
-unit uConsoleSpinner;
+unit bimburi.textcontrol.consolespinner;
 
 {$mode delphi}{$H+}
 

@@ -1,4 +1,4 @@
-unit uSelection;
+unit bimburi.textcontrol.selection;
 
 {$mode delphi}{$H+}
 

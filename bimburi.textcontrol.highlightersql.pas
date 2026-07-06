@@ -1,11 +1,11 @@
-unit uHighlighterSQL;
+unit bimburi.textcontrol.highlightersql;
 
 {$mode delphi}{$H+}
 
 interface
 
 uses
-  uHighlighter;
+  bimburi.textcontrol.highlighter;
 
 type
   { TSqlHighlighter - case-insensitive keywords, -- and /* */ comments

@@ -1,11 +1,11 @@
-unit uLayout;
+unit bimburi.textcontrol.layout;
 
 {$mode delphi}{$H+}
 
 interface
 
 uses
-  Classes, SysUtils, uContent;
+  Classes, SysUtils, bimburi.textcontrol.content;
 
 type
   { TVisualRow

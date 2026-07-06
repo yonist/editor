@@ -1,4 +1,4 @@
-unit uCaret;
+unit bimburi.textcontrol.caret;
 
 {$mode delphi}{$H+}
 

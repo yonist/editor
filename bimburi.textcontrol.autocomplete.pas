@@ -1,4 +1,4 @@
-unit uAutoComplete;
+unit bimburi.textcontrol.autocomplete;
 
 {$mode delphi}{$H+}
 
@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Graphics, Controls, StdCtrls, LCLType, Types,
-  uTextControl, uHighlighter, uTheme;
+  bimburi.textcontrol.textcontrol, bimburi.textcontrol.highlighter, bimburi.textcontrol.theme;
 
 type
   { The host fills AItems with candidates for APrefix (it does the matching). }

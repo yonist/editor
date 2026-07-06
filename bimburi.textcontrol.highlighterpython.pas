@@ -1,11 +1,11 @@
-unit uHighlighterPython;
+unit bimburi.textcontrol.highlighterpython;
 
 {$mode delphi}{$H+}
 
 interface
 
 uses
-  uHighlighter;
+  bimburi.textcontrol.highlighter;
 
 type
   { TPythonHighlighter - case-sensitive keywords, # comments, '...'/"..."

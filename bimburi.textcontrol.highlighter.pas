@@ -1,4 +1,4 @@
-unit uHighlighter;
+unit bimburi.textcontrol.highlighter;
 
 {$mode delphi}{$H+}
 

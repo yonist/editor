@@ -1,4 +1,4 @@
-unit uScrollControl;
+unit bimburi.textcontrol.scrollcontrol;
 
 {$mode delphi}{$H+}
 

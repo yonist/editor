@@ -1,4 +1,4 @@
-unit uContent;
+unit bimburi.textcontrol.content;
 
 {$mode delphi}{$H+}
 

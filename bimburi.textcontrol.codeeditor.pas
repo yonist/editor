@@ -1,11 +1,11 @@
-unit uCodeEditor;
+unit bimburi.textcontrol.codeeditor;
 
 {$mode delphi}{$H+}
 
 interface
 
 uses
-  Classes, uTextControl;
+  Classes, bimburi.textcontrol.textcontrol;
 
 type
   { TCodeEditor

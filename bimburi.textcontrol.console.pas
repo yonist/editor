@@ -1,11 +1,11 @@
-unit uConsole;
+unit bimburi.textcontrol.console;
 
 {$mode delphi}{$H+}
 
 interface
 
 uses
-  Classes, SysUtils, Types, LCLType, Clipbrd, uTextControl, uContent, uConsoleSpinner;
+  Classes, SysUtils, Types, LCLType, Clipbrd, bimburi.textcontrol.textcontrol, bimburi.textcontrol.content, bimburi.textcontrol.consolespinner;
 
 type
   // The host returns the mode from OnCommand: ccSync means it already produced

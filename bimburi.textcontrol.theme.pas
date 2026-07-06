@@ -1,11 +1,11 @@
-unit uTheme;
+unit bimburi.textcontrol.theme;
 
 {$mode delphi}{$H+}
 
 interface
 
 uses
-  Graphics, uHighlighter;
+  Graphics, bimburi.textcontrol.highlighter;
 
 type
   TThemeKind = (thLight, thDark);

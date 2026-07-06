@@ -1,4 +1,4 @@
-unit uTextControl;
+unit bimburi.textcontrol.textcontrol;
 
 {$mode delphi}{$H+}
 
@@ -6,8 +6,8 @@ interface
 
 uses
   Classes, SysUtils, Types, Controls, Graphics, Math, LCLType, Clipbrd,
-  uScrollControl, uContent, uCaret, uLayout, uSelection, uUndo, uHighlighter,
-  uTheme, uGutter;
+  bimburi.textcontrol.scrollcontrol, bimburi.textcontrol.content, bimburi.textcontrol.caret, bimburi.textcontrol.layout, bimburi.textcontrol.selection, bimburi.textcontrol.undo, bimburi.textcontrol.highlighter,
+  bimburi.textcontrol.theme, bimburi.textcontrol.gutter;
 
 type
   { IAutoComplete

@@ -1,11 +1,11 @@
-unit uGutter;
+unit bimburi.textcontrol.gutter;
 
 {$mode delphi}{$H+}
 
 interface
 
 uses
-  SysUtils, Types, Graphics, uLayout;
+  SysUtils, Types, Graphics, bimburi.textcontrol.layout;
 
 type
   { TGutter
