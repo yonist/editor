@@ -59,7 +59,9 @@ type
     procedure MouseUp(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
 
-    property ScrollOffsetY: Integer read FScrollY;
+    // Writable for descendants that scroll to an absolute position (e.g. page
+    // navigation); the setter clamps to the valid range.
+    property ScrollOffsetY: Integer read FScrollY write SetScrollY;
     property ContentHeight: Integer read FContentHeight write SetContentHeight;
     property ScrollStep: Integer read FScrollStep write FScrollStep;
     property BarWidth: Integer read FBarWidth;

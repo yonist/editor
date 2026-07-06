@@ -55,6 +55,8 @@ type
     function DoTab(ABack: Boolean): Boolean; override;   // consume Tab, do nothing
     procedure MoveUp; override;       // Up/Down don't move the caret; they
     procedure MoveDown; override;     // request history navigation instead
+    procedure MovePage(ADown: Boolean); override;  // no-op: paging is meaningless
+                                                   // in the console; keys consumed
     procedure Paste; override;        // single-line input: strip line breaks
     procedure EvictTokens(AFirst, ALast: Integer); override;  // keep scrollback cached
     procedure PositionCaretFromMouse(X, Y: Integer); override;
@@ -292,6 +294,12 @@ begin
   ClearSelection;
   if Assigned(FOnHistory) then
     FOnHistory(Self, False);         // next (newer) entry
+end;
+
+procedure TConsole.MovePage(ADown: Boolean);
+begin
+  // No-op: the console has a single editable input line, so paging the caret
+  // makes no sense. Overriding to nothing swallows PageUp/PageDown cleanly.
 end;
 
 procedure TConsole.Paste;

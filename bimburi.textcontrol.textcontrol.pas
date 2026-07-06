@@ -206,6 +206,11 @@ type
     procedure MoveDown; virtual;
     procedure MoveHome; virtual;
     procedure MoveEnd; virtual;
+    // A page move keeps the caret on the same on-screen row (viewport-preserving)
+    // and preserves the goal column. Ctrl+Home/End jump to the document ends.
+    procedure MovePage(ADown: Boolean); virtual;
+    procedure MoveDocStart; virtual;
+    procedure MoveDocEnd; virtual;
 
     // Drop the selection (repaints if one was showing). Protected so subclasses
     // can clear it - e.g. the console clears it inside its history Up/Down.
@@ -649,6 +654,58 @@ end;
 procedure TTextControl.MoveEnd;
 begin
   SetCaret(FCaret.Line, Length(FContent[FCaret.Line]));
+  SyncGoalCol;
+end;
+
+procedure TTextControl.MovePage(ADown: Boolean);
+var
+  VisibleRows, Step, CurVr, TgtVr: Integer;
+  Row: TVisualRow;
+begin
+  if (FLayout = nil) or (FLineHeight <= 0) then
+    Exit;
+  // Whole rows in the visible band (the margins already make this exact).
+  VisibleRows := (ViewportHeight - FTopMargin - FBottomMargin) div FLineHeight;
+  if VisibleRows < 1 then
+    VisibleRows := 1;
+  Step := VisibleRows - 1;             // one row of context overlap
+  if Step < 1 then
+    Step := 1;
+
+  CurVr := FLayout.VisualRowOf(FCaret.Line, FCaret.Col);
+  if CurVr < 0 then
+    Exit;
+  if ADown then
+    TgtVr := CurVr + Step
+  else
+    TgtVr := CurVr - Step;
+  // Clamp to the document extent.
+  if TgtVr < 0 then
+    TgtVr := 0
+  else if TgtVr > FLayout.Count - 1 then
+    TgtVr := FLayout.Count - 1;
+
+  // Land on the same preferred column in the target visual row (goal col NOT
+  // resynced, like MoveUp/MoveDown).
+  Row := FLayout[TgtVr];
+  SetCaret(Row.LogicalLine, Row.StartCol + Min(FGoalCol, Row.Length));
+  // Keep the caret on the same on-screen row: scroll by the rows actually moved
+  // (base clamps at the document ends, where ReconcileCaret then keeps it visible).
+  ScrollOffsetY := ScrollOffsetY + (TgtVr - CurVr) * FLineHeight;
+end;
+
+procedure TTextControl.MoveDocStart;
+begin
+  SetCaret(0, 0);                      // clamps up to EditableStart (console prompt)
+  SyncGoalCol;
+end;
+
+procedure TTextControl.MoveDocEnd;
+var
+  Last: Integer;
+begin
+  Last := FContent.Count - 1;
+  SetCaret(Last, Length(FContent[Last]));
   SyncGoalCol;
 end;
 
@@ -1371,7 +1428,8 @@ begin
   end;
 
   IsNav := (Key = VK_LEFT) or (Key = VK_RIGHT) or (Key = VK_UP) or
-           (Key = VK_DOWN) or (Key = VK_HOME) or (Key = VK_END);
+           (Key = VK_DOWN) or (Key = VK_HOME) or (Key = VK_END) or
+           (Key = VK_PRIOR) or (Key = VK_NEXT);
   if not IsNav then
     Exit;                            // not a navigation key; leave Key untouched
 
@@ -1411,8 +1469,10 @@ begin
     VK_RIGHT: MoveRight;
     VK_UP:    MoveUp;
     VK_DOWN:  MoveDown;
-    VK_HOME:  MoveHome;
-    VK_END:   MoveEnd;
+    VK_HOME:  if ssCtrl in Shift then MoveDocStart else MoveHome;
+    VK_END:   if ssCtrl in Shift then MoveDocEnd   else MoveEnd;
+    VK_PRIOR: MovePage(False);
+    VK_NEXT:  MovePage(True);
   end;
   Key := 0;                          // handled
 

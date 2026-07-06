@@ -6,7 +6,9 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls, StdCtrls,
-  bimburi.textcontrol.codeeditor, bimburi.textcontrol.console, bimburi.textcontrol.highlighterpython, bimburi.textcontrol.highlightersql, bimburi.textcontrol.theme,
+  bimburi.textcontrol.codeeditor, bimburi.textcontrol.console,
+  bimburi.textcontrol.highlighterpython,
+  bimburi.textcontrol.highlightersql, bimburi.textcontrol.theme,
   bimburi.textcontrol.autocomplete;
 
 type
