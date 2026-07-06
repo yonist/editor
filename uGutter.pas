@@ -47,7 +47,12 @@ type
     // logical line (StartCol = 0) gets a number; wrapped continuation rows are
     // left blank.
     procedure Draw(ACanvas: TCanvas; ALayout: TLayout;
-      AFirst, ALast, ALineHeight, AScrollOffsetY, AClientHeight: Integer);
+      AFirst, ALast, ALineHeight, AScrollOffsetY, AClientHeight, ATopMargin: Integer);
+
+    // Repaint the gutter's slice of a spacer band [ATop, ABottom), hiding any
+    // number that scrolled into it (the separator column is left intact). Called
+    // after Draw so the top/bottom spacers read as fixed, blank insets.
+    procedure CoverBand(ACanvas: TCanvas; ATop, ABottom: Integer);
 
     property Visible: Boolean read FVisible write FVisible;
     property Width: Integer read FWidth;
@@ -104,7 +109,7 @@ begin
 end;
 
 procedure TGutter.Draw(ACanvas: TCanvas; ALayout: TLayout;
-  AFirst, ALast, ALineHeight, AScrollOffsetY, AClientHeight: Integer);
+  AFirst, ALast, ALineHeight, AScrollOffsetY, AClientHeight, ATopMargin: Integer);
 const
   DotChar = #$C2#$B7;                  // U+00B7 MIDDLE DOT, UTF-8 encoded
 var
@@ -134,7 +139,7 @@ begin
     if Row.StartCol <> 0 then
       Continue;                        // wrapped continuation row -> no number
     LineNo := Row.LogicalLine + 1;     // line numbers are 1-based
-    Yp := i * ALineHeight - AScrollOffsetY;
+    Yp := ATopMargin + i * ALineHeight - AScrollOffsetY;   // share the text's top spacer
     if ((FInterval > 1) and (LineNo mod FInterval <> 0)) and (LineNo <> 1) then
       // Off-interval line: a centered placeholder dot instead of the number.
       ACanvas.TextOut(
@@ -146,6 +151,18 @@ begin
       ACanvas.TextOut(FWidth - FRightPad - System.Length(S) * FCharWidth, Yp, S);
     end;
   end;
+end;
+
+procedure TGutter.CoverBand(ACanvas: TCanvas; ATop, ABottom: Integer);
+begin
+  if (not FVisible) or (FWidth <= 0) or (ABottom <= ATop) then
+    Exit;
+  // Repaint the background over the band, but stop short of the separator column
+  // (FWidth-1) so the divider stays continuous through it.
+  ACanvas.Brush.Style := bsSolid;
+  ACanvas.Brush.Color := FBackColor;
+  ACanvas.FillRect(Rect(0, ATop, FWidth - 1, ABottom));
+  ACanvas.Brush.Style := bsClear;
 end;
 
 end.

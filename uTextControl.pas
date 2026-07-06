@@ -47,6 +47,9 @@ type
     FCharWidth: Integer;     // monospace cell width, px (cached)
     FLineHeight: Integer;    // row height, px (cached)
     FLeftMargin: Integer;    // left inset before column 0, px (gap after the gutter)
+    FTopMargin: Integer;     // fixed spacer above the first row, px (like FLeftMargin)
+    FBottomMargin: Integer;  // computed spacer below the content so a whole number of
+                             // rows fits between the margins (no partial line)
     FGutter: TGutter;        // left line-number strip (owns its width + drawing)
     FCaretFollowPending: Boolean;  // SetPosition requested before viewport was ready
     FGoalCol: Integer;             // preferred visual column for vertical navigation
@@ -92,6 +95,7 @@ type
     procedure CaretChanged(Sender: TObject);
     procedure SetWordWrap(AValue: Boolean);
     procedure SetLeftMargin(AValue: Integer);
+    procedure SetTopMargin(AValue: Integer);
     function TextLeft: Integer;               // x of column 0 = gutter width + margin
     function GetShowGutter: Boolean;
     procedure SetShowGutter(AValue: Boolean);
@@ -233,6 +237,10 @@ type
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
     property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
+    // Fixed spacer above the first row, px (vertical counterpart of LeftMargin).
+    // A matching bottom spacer is computed so a whole number of rows fits between
+    // them (no partial line).
+    property TopMargin: Integer read FTopMargin write SetTopMargin;
     property ShowGutter: Boolean read GetShowGutter write SetShowGutter;
     // Number every Nth line; the rest show a centered dot. 1 = every line.
     property GutterInterval: Integer read GetGutterInterval write SetGutterInterval;
@@ -260,6 +268,7 @@ begin
   FGutter := TGutter.Create;         // hidden by default; RebuildLayout reads its width
   FWordWrap := True;
   FLeftMargin := 10;
+  FTopMargin := 3;                   // fixed top spacer; the bottom margin absorbs the rest
   FCaretDirty := True;
   FTabWidth := 4;
   FTabAsSpaces := True;
@@ -426,7 +435,7 @@ begin
 
   Row := FLayout[Vr];
   FCaretContentX := TextLeft + (FCaret.Col - Row.StartCol) * FCharWidth;
-  FCaretContentY := Vr * FLineHeight;
+  FCaretContentY := FTopMargin + Vr * FLineHeight;
   FCaretDirty := False;              // cleared only on a successful map
 end;
 
@@ -453,7 +462,15 @@ begin
     RecalcCaretPixel;
   if FCaretDirty then
     Exit;                            // couldn't map the caret yet -> don't scroll
-  ScrollIntoView(FCaretContentY, FCaretContentY + FLineHeight);
+
+  // Bring the caret's row into the *visible* region, which runs from FTopMargin
+  // below the top edge to FBottomMargin above the bottom edge (the spacer bands
+  // cover the rest). Subtracting FTopMargin from the top target keeps the row
+  // below the top band and resolves to content-0 on the first row (revealing the
+  // spacer); adding FBottomMargin to the bottom target keeps it above the bottom
+  // band and reaches ContentHeight on the last row (landing it flush).
+  ScrollIntoView(FCaretContentY - FTopMargin,
+                 FCaretContentY + FLineHeight + FBottomMargin);
 end;
 
 procedure TTextControl.ReconcileCaret;
@@ -477,7 +494,7 @@ var
 begin
   if (FLayout = nil) or (FLineHeight <= 0) then
     Exit;
-  Bottom := FLayout.Count * FLineHeight;      // pixel bottom of the last row
+  Bottom := FTopMargin + FLayout.Count * FLineHeight;   // pixel bottom of the last row
   ScrollIntoView(Bottom - FLineHeight, Bottom);
 end;
 
@@ -1497,9 +1514,9 @@ begin
   if (FLayout = nil) or (FLineHeight <= 0) or (FContent.Count = 0) then
     Exit(Point(0, 0));
 
-  // Screen -> content space (inverse of PlaceCaret's offset subtraction),
-  // then content space -> visual row.
-  Vr := (Y + ScrollOffsetY) div FLineHeight;
+  // Screen -> content space (inverse of PlaceCaret's offset subtraction), drop
+  // the top spacer, then content space -> visual row.
+  Vr := (Y + ScrollOffsetY - FTopMargin) div FLineHeight;
   if Vr < 0 then
     Vr := 0
   else if Vr > FLayout.Count - 1 then
@@ -1573,6 +1590,13 @@ procedure TTextControl.RebuildLayout;
 var
   Cols: Integer;
 begin
+  // Bottom margin: absorb the leftover pixels of the area below the fixed top
+  // spacer, so what remains is an exact number of rows - no partial line.
+  if (FLineHeight > 0) and (ClientHeight - FTopMargin > 0) then
+    FBottomMargin := (ClientHeight - FTopMargin) mod FLineHeight
+  else
+    FBottomMargin := 0;
+
   // The gutter width depends only on the line count, so recompute it here (before
   // the wrap width) - no gutter<->layout feedback loop.
   FGutter.Recalc(FContent.Count, FCharWidth);
@@ -1586,8 +1610,9 @@ begin
   FLayout.SetParams(FWordWrap, Cols);
   FLayout.Rebuild;
 
-  // Tell the scroll base how tall the content is now.
-  ContentHeight := FLayout.Count * FLineHeight;
+  // Tell the scroll base how tall the content is now. Both spacers are part of it,
+  // so scrolling to the end lands the last row flush against the bottom margin.
+  ContentHeight := FTopMargin + FBottomMargin + FLayout.Count * FLineHeight;
 
   // Wrapping changed -> the caret's content-space pixel must be recomputed.
   FCaretDirty := True;
@@ -1631,6 +1656,18 @@ begin
   FLeftMargin := AValue;
   RebuildLayout;        // the margin changes the wrap width
   RefreshCaret;         // and the caret's content-space pixel
+  Invalidate;
+end;
+
+procedure TTextControl.SetTopMargin(AValue: Integer);
+begin
+  if AValue < 0 then
+    AValue := 0;
+  if FTopMargin = AValue then
+    Exit;
+  FTopMargin := AValue;
+  RebuildLayout;        // changes content height + the computed bottom margin
+  RefreshCaret;         // and the caret's content-space pixel (Y offset)
   Invalidate;
 end;
 
@@ -1749,8 +1786,9 @@ begin
   Canvas.Brush.Style := bsClear;
   if FLineHeight > 0 then
   begin
-    First := ScrollOffsetY div FLineHeight;
-    Last := (ScrollOffsetY + ClientHeight) div FLineHeight;
+    // Content space includes the top spacer, so drop it before dividing into rows.
+    First := (ScrollOffsetY - FTopMargin) div FLineHeight;
+    Last := (ScrollOffsetY + ClientHeight - FTopMargin) div FLineHeight;
   end
   else
   begin
@@ -1770,7 +1808,7 @@ begin
     if Row.LogicalLine >= FContent.Count then
       Continue;
 
-    DrawRow(Row, i * FLineHeight - ScrollOffsetY);
+    DrawRow(Row, FTopMargin + i * FLineHeight - ScrollOffsetY);
 
     if Row.LogicalLine < LFirst then LFirst := Row.LogicalLine;
     if Row.LogicalLine > LLast then LLast := Row.LogicalLine;
@@ -1782,9 +1820,28 @@ begin
     EvictTokens(LFirst, LLast);
 
   // Gutter (line numbers) over the reserved strip on the left. No-op when hidden.
+  // It shares the text's top spacer so the numbers line up with their rows.
   if FLineHeight > 0 then
     FGutter.Draw(Canvas, FLayout, First, Last, FLineHeight, ScrollOffsetY,
-      ClientHeight);
+      ClientHeight, FTopMargin);
+
+  // Keep the top and bottom margins fixed, blank spacers: rows scroll *under*
+  // them, so repaint the bands after the content so nothing renders partially at
+  // either edge. The gutter repaints its own slice (keeping bg + separator).
+  Canvas.Brush.Style := bsSolid;
+  Canvas.Brush.Color := Color;
+  if FTopMargin > 0 then
+  begin
+    FGutter.CoverBand(Canvas, 0, FTopMargin);
+    Canvas.FillRect(Rect(FGutter.Width, 0, ClientWidth, FTopMargin));
+  end;
+  if FBottomMargin > 0 then
+  begin
+    FGutter.CoverBand(Canvas, ClientHeight - FBottomMargin, ClientHeight);
+    Canvas.FillRect(Rect(FGutter.Width, ClientHeight - FBottomMargin,
+      ClientWidth, ClientHeight));
+  end;
+  Canvas.Brush.Style := bsClear;
 
   // Reposition and restore the caret (recomputes pixel only if marked dirty).
   RefreshCaret;
