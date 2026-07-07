@@ -102,7 +102,7 @@ type
     function GetGutterInterval: Integer;
     procedure SetGutterInterval(AValue: Integer);
     procedure CopySelection;
-    function SelectedText: string;
+    function GetSelectedText: string;
     procedure SelectAll;
     function SelectionIsReadOnly: Boolean;
     function ResolveEditPoint(out AStartLine, AOldCount, ACol: Integer;
@@ -125,7 +125,7 @@ type
     procedure ApplyTheme(const ATheme: TTheme);
     procedure SetThemeKind(AValue: TThemeKind);
   protected
-    function HasSelection: Boolean;
+    function GetHasSelection: Boolean;
     // Block content mutation - the single choke point (editing, undo/redo, and
     // the console's programmatic appends all route through here), so it is also
     // where the highlight cache is invalidated. Protected for subclasses.
@@ -237,6 +237,12 @@ type
     function CurrentTheme: TTheme;
 
     property Content: TContent read FContent;
+    // Read-only access to the current selection, for host-side processing. Reading
+    // SelectedText is non-destructive (it does not clear the selection or touch
+    // the clipboard) and returns '' when nothing is selected; multi-line runs are
+    // joined with LineEnding. HasSelection is a cheap "is anything selected?" check.
+    property SelectedText: string read GetSelectedText;
+    property HasSelection: Boolean read GetHasSelection;
     property Completion: IAutoComplete read GetCompletion write SetCompletion;
     property LineHeight: Integer read FLineHeight;
     property Caret: TCaret read FCaret;
@@ -515,7 +521,7 @@ begin
   end;
 end;
 
-function TTextControl.SelectedText: string;
+function TTextControl.GetSelectedText: string;
 var
   SLine, SCol, ELine, ECol, i: Integer;
 begin
@@ -545,7 +551,7 @@ begin
   ClearSelection;        // copy consumes the selection (and repaints)
 end;
 
-function TTextControl.HasSelection: Boolean;
+function TTextControl.GetHasSelection: Boolean;
 begin
   Result := not FSelection.IsEmpty;
 end;

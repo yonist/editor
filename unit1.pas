@@ -37,10 +37,11 @@ type
     procedure BuildLayout;
     procedure SeedEditor;
     procedure SeedConsole;
-    function ConsoleCommand(Sender: TObject; const ACommand: string): TConsoleCommandMode;
+    function ConsoleCommand(const console: TConsole; const ACommand: string): TConsoleCommandMode;
     procedure AsyncDone(Sender: TObject);
-    procedure ConsoleCancel(Sender: TObject; const ACommand: string);
-    procedure ConsoleHistory(Sender: TObject; APrevious: Boolean);
+    procedure ConsoleCancel(const Sender: TConsole; const ACommand: string);
+    procedure ConsoleHistory(const Sender: TConsole; const prev: Boolean; var historyItem: string);
+    procedure ConsoleBoot(const bootMessage: TStringList);
     procedure ThemeChange(Sender: TObject);
     procedure LoadClick(Sender: TObject);
     procedure SaveClick(Sender: TObject);
@@ -194,12 +195,19 @@ begin
   FConsole.OnCommand := @ConsoleCommand;
   FConsole.OnHistory := @ConsoleHistory;
   FConsole.OnCancelCommand := @ConsoleCancel;
-  FConsole.Output('TConsole - terminal control. Type a command and press Enter.');
-  FConsole.Output('Type "async" to see a spinner while a slow command runs.');
-  FConsole.NewPrompt;
+  FConsole.OnBoot := @ConsoleBoot;              // intro lines emitted on Activate
+  // The host must call Activate once the console is wired up: it emits the boot
+  // message (via OnBoot) and shows the first prompt.
+  FConsole.Activate;
 end;
 
-function TForm1.ConsoleCommand(Sender: TObject;
+procedure TForm1.ConsoleBoot(const bootMessage: TStringList);
+begin
+  bootMessage.Add('TConsole - terminal control. Type a command and press Enter.');
+  bootMessage.Add('Type "async" to see a spinner while a slow command runs.');
+end;
+
+function TForm1.ConsoleCommand(const console: TConsole;
   const ACommand: string): TConsoleCommandMode;
 begin
   // Remember the command, then reset the history cursor past the newest entry.
@@ -229,19 +237,25 @@ begin
   FConsole.CommandResult('async result for: ' + FAsyncCommand);
 end;
 
-procedure TForm1.ConsoleCancel(Sender: TObject; const ACommand: string);
+procedure TForm1.ConsoleCancel(const Sender: TConsole; const ACommand: string);
 begin
   // Host's choice: abort the simulated work and close out the command.
   FAsyncTimer.Enabled := False;
   FConsole.CommandResult('^C  cancelled: ' + ACommand);
 end;
 
-procedure TForm1.ConsoleHistory(Sender: TObject; APrevious: Boolean);
+procedure TForm1.ConsoleHistory(const Sender: TConsole; const prev: Boolean;
+  var historyItem: string);
 begin
+  // The console applies historyItem to the input line itself (SetInput); we only
+  // move the cursor and hand back the entry to show.
   if FHistory.Count = 0 then
+  begin
+    historyItem := Sender.CurrentInput;     // no history -> leave the line unchanged
     Exit;
+  end;
 
-  if APrevious then
+  if prev then
   begin
     if FHistoryIndex > 0 then
       Dec(FHistoryIndex);
@@ -253,9 +267,9 @@ begin
   end;
 
   if FHistoryIndex >= FHistory.Count then
-    FConsole.SetInput('')                   // past the newest entry -> empty line
+    historyItem := ''                       // past the newest entry -> empty line
   else
-    FConsole.SetInput(FHistory[FHistoryIndex]);
+    historyItem := FHistory[FHistoryIndex];
 end;
 
 procedure TForm1.ThemeChange(Sender: TObject);
