@@ -82,6 +82,7 @@ type
     function GetCompletion: IAutoComplete;
     procedure SetCompletion(const AValue: IAutoComplete);
     function IsWordChar(C: Char): Boolean;
+    function WordBoundsAt(ALine, ACol: Integer; out AStart, AEnd: Integer): Boolean;
     procedure ClampCaret;
     procedure SetCaret(ALine, ACol: Integer);
     function CaretVisualCol: Integer;
@@ -166,6 +167,9 @@ type
     function LogicalFromPoint(X, Y: Integer;
       SnapToNearest: Boolean = True): TPoint;
     procedure PositionCaretFromMouse(X, Y: Integer); virtual;
+    // Double-click: select the identifier under the cursor (and, on an editable
+    // line, move the caret to its end).
+    procedure SelectWordAtPoint(X, Y: Integer);
 
     procedure DoEnter; override;
     procedure DoExit; override;
@@ -306,6 +310,8 @@ begin
   Font.EndUpdate;
 
   TabStop := True;          // allow the control to receive keyboard focus
+  // Ensure the widgetset raises double-click messages (needed for word select).
+  ControlStyle := ControlStyle + [csDoubleClicks];
   FThemeKind := thDark;
   ApplyTheme(DarkTheme);    // default theme (sets Color, syntax, selection, caret, bar)
 end;
@@ -370,6 +376,34 @@ function TTextControl.IsWordChar(C: Char): Boolean;
 begin
   Result := (C = '_') or ((C >= '0') and (C <= '9')) or
             ((C >= 'A') and (C <= 'Z')) or ((C >= 'a') and (C <= 'z'));
+end;
+
+function TTextControl.WordBoundsAt(ALine, ACol: Integer;
+  out AStart, AEnd: Integer): Boolean;
+var
+  Line: string;
+  N: Integer;
+begin
+  Result := False;
+  AStart := ACol;
+  AEnd := ACol;
+  if (ALine < 0) or (ALine > FContent.Count - 1) then
+    Exit;
+  Line := FContent[ALine];
+  N := Length(Line);
+  // The char under the 0-based column ACol is Line[ACol+1] (1-based). Only
+  // identifiers count as words, so a click off a word char selects nothing.
+  if (ACol < 0) or (ACol >= N) or (not IsWordChar(Line[ACol + 1])) then
+    Exit;
+  // Expand over the maximal run of identifier characters. Line[AStart] is the
+  // char just left of column AStart; Line[AEnd+1] is the char just right of AEnd.
+  AStart := ACol;
+  while (AStart > 0) and IsWordChar(Line[AStart]) do
+    Dec(AStart);
+  AEnd := ACol + 1;
+  while (AEnd < N) and IsWordChar(Line[AEnd + 1]) do
+    Inc(AEnd);
+  Result := True;
 end;
 
 function TTextControl.WordAtCaret: string;
@@ -1530,6 +1564,17 @@ begin
   // (a drag selects and must NOT move the caret - invariant of this feature).
   if (Button = mbLeft) and (X < ClientWidth - BarWidth) then
   begin
+    // A double-click selects the identifier under the cursor. Require X >= TextLeft
+    // so clicks on the gutter (or the left margin) fall through to a normal click -
+    // there is no text there, so there is no word to select.
+    if (ssDouble in Shift) and (X >= TextLeft) then
+    begin
+      SelectWordAtPoint(X, Y);
+      FPendingClick := False;        // the following MouseUp must not reposition/clear
+      FSelecting := False;
+      Exit;
+    end;
+
     FMouseDownPt := Point(X, Y);
     // Anchor on the letter under the cursor (floor), so a drag selects starting
     // from the clicked character rather than rounding to its neighbour.
@@ -1643,6 +1688,35 @@ begin
   ReconcileCaret;       // recompute pixel once, scroll into view, place
   // No Invalidate: a click is a caret-only move (content unchanged); if it
   // scrolls, SetScrollY repaints. Same convention as KeyDown navigation.
+end;
+
+procedure TTextControl.SelectWordAtPoint(X, Y: Integer);
+var
+  P: TPoint;
+  WStart, WEnd: Integer;
+  ES: TPoint;
+begin
+  // Floor to the character under the cursor (the same rule as a drag anchor).
+  P := LogicalFromPoint(X, Y, False);
+  if not WordBoundsAt(P.Y, P.X, WStart, WEnd) then
+    Exit;                              // not on an identifier -> select nothing
+
+  // Select the whole identifier. This runs even when read-only, so the user can
+  // double-click and copy.
+  FSelection.SetAnchor(P.Y, WStart);
+  FSelection.ExtendTo(P.Y, WEnd);
+  Invalidate;
+
+  // On an editable line, also drop the caret at the end of the word. CanEdit rules
+  // out read-only mode / the console's inactive prompt; the EditableStart check
+  // rules out the console's read-only scrollback.
+  ES := EditableStart;
+  if CanEdit and ((P.Y > ES.Y) or ((P.Y = ES.Y) and (WStart >= ES.X))) then
+  begin
+    SetCaret(P.Y, WEnd);
+    SyncGoalCol;
+    ReconcileCaret;
+  end;
 end;
 
 procedure TTextControl.MeasureFont;
