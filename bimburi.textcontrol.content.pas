@@ -27,6 +27,7 @@ type
     function Add(const ALine: string): Integer;
     procedure Insert(AIndex: Integer; const ALine: string);
     procedure Delete(AIndex: Integer);
+    procedure AddLines(const strings: TStrings);
 
     // Raw text serialization (UTF-8, no BOM; a UTF-8 BOM is stripped on load).
     procedure SaveToStream(AStream: TStream);
@@ -72,6 +73,11 @@ begin
   FLines.Delete(AIndex);
   if FLines.Count = 0 then
      FLines.Add(''); // Ensures that the content is never empty
+end;
+
+procedure TContent.AddLines(const strings: TStrings);
+begin
+  FLines.AddStrings(strings);
 end;
 
 procedure TContent.SaveToStream(AStream: TStream);

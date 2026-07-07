@@ -12,12 +12,9 @@ type
   // output and called NewPrompt; ccAsync means it will call CommandResult later
   // (the console spins and waits in the meantime).
   TConsoleCommandMode = (ccSync, ccAsync);
-  TConsoleCommandEvent = function(Sender: TObject; const ACommand: string): TConsoleCommandMode of object;
-  // APrevious = True -> older entry (Up); False -> newer entry (Down).
-  TConsoleHistoryEvent = procedure(Sender: TObject; APrevious: Boolean) of object;
-  // Raised when the user asks to cancel a running async command (Ctrl+C with no
-  // selection). The host may ignore it or finish the command via CommandResult.
-  TConsoleCancelEvent = procedure(Sender: TObject; const ACommand: string) of object;
+
+  TBoot = procedure(const bootMessage: TStringList) of object;
+  TGetPrompt = function (): string of object;
 
   { TConsole
     A console/terminal control: an append-only scrollback of read-only history
@@ -27,17 +24,27 @@ type
 
     Most of the read-only confinement comes from TTextControl.EditableStart. }
   TConsole = class(TTextControl)
+  type
+    TConsoleCommandEvent = function(const console: TConsole; const ACommand: string): TConsoleCommandMode of object;
+    // APrevious = True -> older entry (Up); False -> newer entry (Down).
+    TRequestHistory = procedure(const Sender: TConsole; const prev: boolean; var historyItem: string) of object;
+    // Raised when the user asks to cancel a running async command (Ctrl+C with no
+    // selection). The host may ignore it or finish the command via CommandResult.
+    TConsoleCancelEvent = procedure(const Sender: TConsole; const ACommand: string) of object;
+
   private
     FPrompt: string;
     FInputActive: Boolean;            // between NewPrompt and the next Enter
     FOnCommand: TConsoleCommandEvent;
-    FOnHistory: TConsoleHistoryEvent;
+    FOnHistory: TRequestHistory;
     FOnCancelCommand: TConsoleCancelEvent;
     FSpinner: TConsoleSpinner;
     FSpinnerType: TConsoleSpinnerType;
     FAwaitingResult: Boolean;         // async command in flight (spinner running)
     FRunningCommand: string;          // the command currently awaiting a result
     FSpinnerLine: Integer;            // content line the spinner animates on (-1 = none)
+    FOnBoot : TBoot;
+    FOnGetPrompt : TGetPrompt;
     function LastLineIndex: Integer;
     function LastLine: string;
     procedure SetPrompt(AValue: string);
@@ -80,17 +87,22 @@ type
     // stops the spinner, prints the result, and shows a new prompt.
     procedure CommandResult(const AResult: string);
 
+    // The client must call this procedure after the control was created
+    procedure Activate();
     // Assigning Prompt starts a new editable line and renders the new prompt.
     property Prompt: string read FPrompt write SetPrompt;
     property InputActive: Boolean read FInputActive;
     // True while an async command is in flight (spinner running).
     property AwaitingResult: Boolean read FAwaitingResult;
+
     property SpinnerType: TConsoleSpinnerType read FSpinnerType write FSpinnerType;
     property OnCommand: TConsoleCommandEvent read FOnCommand write FOnCommand;
-    property OnHistory: TConsoleHistoryEvent read FOnHistory write FOnHistory;
+    property OnHistory: TRequestHistory read FOnHistory write FOnHistory;
     // Ctrl+C during an async command (with nothing selected). The host decides:
     // ignore, or wrap it up with CommandResult.
     property OnCancelCommand: TConsoleCancelEvent read FOnCancelCommand write FOnCancelCommand;
+    property OnBoot: TBoot read FOnBoot write FOnBoot;
+    property OnGetPrompt: TGetPrompt read FOnGetPrompt write FOnGetPrompt;
   end;
 
 implementation
@@ -274,26 +286,48 @@ begin
   NewPrompt;
 end;
 
+procedure TConsole.Activate;
+var
+  bootMessage: TStringList;
+begin
+  try
+    bootMessage := TStringList.Create;
+    if Assigned(FOnBoot) then begin;
+      FOnBoot(bootMessage);
+      Content.AddLines(bootMessage);
+    end;
+    NewPrompt;
+  finally
+    bootMessage.Free()
+  end;
+end;
+
 function TConsole.DoTab(ABack: Boolean): Boolean;
 begin
   Result := False;   // consume the Tab key but do nothing (for now)
 end;
 
 procedure TConsole.MoveUp;
+var
+  History: string;
 begin
   // Up/Down are history recall, not caret navigation. Clearing the selection
   // here makes the base's post-move ExtendTo a no-op, so Shift+Up/Down never
   // start a selection.
   ClearSelection;
   if Assigned(FOnHistory) then
-    FOnHistory(Self, True);          // previous (older) entry
+    FOnHistory(Self, True, History);          // previous (older) entry
+  SetInput(History);
 end;
 
 procedure TConsole.MoveDown;
+var
+  History: string;
 begin
   ClearSelection;
   if Assigned(FOnHistory) then
-    FOnHistory(Self, False);         // next (newer) entry
+    FOnHistory(Self, False, History);         // next (newer) entry
+  SetInput(History);
 end;
 
 procedure TConsole.MovePage(ADown: Boolean);
@@ -384,6 +418,8 @@ end;
 
 procedure TConsole.NewPrompt;
 begin
+  if Assigned(FOnGetPrompt) then
+     FPrompt := FOnGetPrompt();
   SwapLines(Content.Count, 0, [FPrompt]);   // append the prompt line (non-recorded)
   FInputActive := True;
   ResetUndo;                         // undo is scoped to the current input line
