@@ -6,6 +6,5 @@ object Form1: TForm1
   Caption = 'Form1'
   DesignTimePPI = 144
   Font.Height = -18
-  LCLVersion = '4.2.0.0'
   OnCreate = FormCreate
 end

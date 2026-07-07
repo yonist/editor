@@ -53,7 +53,7 @@ type
     procedure StopSpinner;
   protected
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
-    function AcceptsKey(Key: Word; Shift: TShiftState): Boolean; override;
+    function CanEdit: Boolean; override;   // editable only while the prompt is live
     function EditableStart: TPoint; override;
     procedure InsertChar(ACh: Char); override;
     procedure DeleteBack; override;
@@ -152,16 +152,12 @@ begin
   NewPrompt;   // setting the prompt renders it on a fresh input line
 end;
 
-function TConsole.AcceptsKey(Key: Word; Shift: TShiftState): Boolean;
+function TConsole.CanEdit: Boolean;
 begin
-  if FInputActive then
-    Exit(True);                         // normal editing while the prompt is live
-
-  // Locked (between commands, or awaiting an async result): swallow everything
-  // that could mutate content or open the completion popup. Read-only copy
-  // conveniences stay available so the user can grab scrollback.
-  Result := (ssCtrl in Shift) and
-            ((Key = Ord('C')) or (Key = Ord('A')) or (Key = VK_INSERT));
+  // Editable only while not read-only (base) AND the prompt is live. When locked
+  // (between commands, or awaiting an async result) the base's AcceptsKey drops
+  // to the read-only key set, keeping the copy/select conveniences on scrollback.
+  Result := (inherited CanEdit) and FInputActive;
 end;
 
 function TConsole.EditableStart: TPoint;

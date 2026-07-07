@@ -23,6 +23,7 @@ type
     FLoadButton: TButton;
     FSaveButton: TButton;
     FTestButton: TButton;
+    FReadOnlyCheck: TCheckBox;
     FTopPanel: TPanel;
     FBottomPanel: TPanel;
     FSplitter: TSplitter;
@@ -46,6 +47,7 @@ type
     procedure LoadClick(Sender: TObject);
     procedure SaveClick(Sender: TObject);
     procedure TestClick(Sender: TObject);
+    procedure ReadOnlyToggle(Sender: TObject);
     procedure EditorComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
     procedure ConsoleComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
   public
@@ -109,6 +111,15 @@ begin
   FTestButton.Top := 7;
   FTestButton.Width := 80;
   FTestButton.OnClick := @TestClick;
+
+  // Toggle the editor between editable and read-only (to test ReadOnly mode).
+  FReadOnlyCheck := TCheckBox.Create(Self);
+  FReadOnlyCheck.Parent := FCommandPanel;
+  FReadOnlyCheck.Caption := 'Read-only';
+  FReadOnlyCheck.Left := 410;
+  FReadOnlyCheck.Top := 11;
+  FReadOnlyCheck.Width := 100;
+  FReadOnlyCheck.OnChange := @ReadOnlyToggle;
 
   // Top panel hosts the code editor.
   FTopPanel := TPanel.Create(Self);
@@ -312,6 +323,12 @@ end;
 procedure TForm1.TestClick(Sender: TObject);
 begin
   FConsole.Prompt:= 'Dev Shmec';
+end;
+
+procedure TForm1.ReadOnlyToggle(Sender: TObject);
+begin
+  FEditor.ReadOnly := FReadOnlyCheck.Checked;
+  FConsole.ReadOnly:= FReadOnlyCheck.Checked;
 end;
 
 procedure TForm1.EditorComplete(Sender: TObject; const APrefix: string;

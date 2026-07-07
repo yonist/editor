@@ -73,6 +73,7 @@ type
     FThemeKind: TThemeKind;
     FTabWidth: Integer;            // spaces per Tab when FTabAsSpaces
     FTabAsSpaces: Boolean;         // Tab inserts spaces (True) or a #9 (False)
+    FReadOnly: Boolean;            // rejects keyboard editing + hides the caret
     // Non-owning reference to the autocomplete popup (nil = none). Stored as a
     // raw Pointer, NOT an interface field, so the compiler never emits an
     // _AddRef/_Release: the popup's lifetime is the host's business, and this
@@ -101,6 +102,7 @@ type
     procedure SetShowGutter(AValue: Boolean);
     function GetGutterInterval: Integer;
     procedure SetGutterInterval(AValue: Integer);
+    procedure SetReadOnly(AValue: Boolean);
     procedure CopySelection;
     function GetSelectedText: string;
     procedure SelectAll;
@@ -139,9 +141,13 @@ type
     procedure Resize; override;
     procedure KeyPress(var Key: Char); override;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    // May content be edited right now? The single point of variation behind the
+    // keyboard gate: the base is editable unless ReadOnly; TConsole also requires
+    // a live prompt. Override to add further conditions.
+    function CanEdit: Boolean; virtual;
     // Single gate for keyboard input. When it returns False the key is swallowed
-    // by KeyDown before any dispatch. Base is always editable; TConsole locks it
-    // while input is inactive (between commands / awaiting an async result).
+    // by KeyDown before any dispatch. When not CanEdit, only the non-mutating
+    // copy/select keys (Ctrl+C / Ctrl+A / Ctrl+Insert) are let through.
     function AcceptsKey(Key: Word; Shift: TShiftState): Boolean; virtual;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
@@ -247,6 +253,10 @@ type
     property LineHeight: Integer read FLineHeight;
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
+    // Read-only mode: rejects all keyboard editing (only Ctrl+C / Ctrl+A /
+    // Ctrl+Insert pass, for copy/select) and hides the caret. Mouse selection
+    // still works, so SelectedText remains usable.
+    property ReadOnly: Boolean read FReadOnly write SetReadOnly;
     property LeftMargin: Integer read FLeftMargin write SetLeftMargin;
     // Fixed spacer above the first row, px (vertical counterpart of LeftMargin).
     // A matching bottom spacer is computed so a whole number of rows fits between
@@ -1357,9 +1367,21 @@ begin
   AfterEdit;
 end;
 
+function TTextControl.CanEdit: Boolean;
+begin
+  Result := not FReadOnly;
+end;
+
 function TTextControl.AcceptsKey(Key: Word; Shift: TShiftState): Boolean;
 begin
-  Result := True;   // the base control is always editable
+  if CanEdit then
+    Exit(True);                        // fully editable -> accept everything
+
+  // Read-only (ReadOnly, or the console between prompts): swallow everything that
+  // could mutate content or open the completion popup; keep the non-mutating
+  // copy/select conveniences so the user can grab the selection.
+  Result := (ssCtrl in Shift) and
+            ((Key = Ord('C')) or (Key = Ord('A')) or (Key = VK_INSERT));
 end;
 
 procedure TTextControl.KeyDown(var Key: Word; Shift: TShiftState);
@@ -1737,6 +1759,22 @@ begin
   Invalidate;
 end;
 
+procedure TTextControl.SetReadOnly(AValue: Boolean);
+begin
+  if FReadOnly = AValue then
+    Exit;
+  FReadOnly := AValue;
+  // Match the caret to the new mode: hide it when going read-only, restore it if
+  // we're leaving read-only while focused (otherwise DoEnter shows it on focus).
+  if FReadOnly then
+    FCaret.Hide
+  else if Focused then
+  begin
+    FCaret.Show(Handle);
+    RefreshCaret;
+  end;
+end;
+
 function TTextControl.TextLeft: Integer;
 begin
   // X of column 0. The gutter (0 wide when hidden) sits left of the margin.
@@ -1788,6 +1826,8 @@ procedure TTextControl.DoEnter;
 begin
   inherited DoEnter;
   //MeasureFont;            // refresh metrics + apply the font to the canvas
+  if FReadOnly then
+    Exit;                   // read-only: no caret, even when focused
   FCaret.Show(Handle);
   RefreshCaret;
 end;
