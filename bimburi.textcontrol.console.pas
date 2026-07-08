@@ -5,7 +5,10 @@ unit bimburi.textcontrol.console;
 interface
 
 uses
-  Classes, SysUtils, Types, LCLType, Clipbrd, bimburi.textcontrol.textcontrol, bimburi.textcontrol.content, bimburi.textcontrol.consolespinner;
+  Classes, SysUtils, Types, Graphics, LCLType, Clipbrd,
+  bimburi.textcontrol.textcontrol, bimburi.textcontrol.content,
+  bimburi.textcontrol.consolespinner, bimburi.textcontrol.theme,
+  bimburi.textcontrol.highlighter;
 
 type
   // The host returns the mode from OnCommand: ccSync means it already produced
@@ -45,6 +48,15 @@ type
     FSpinnerLine: Integer;            // content line the spinner animates on (-1 = none)
     FOnBoot : TBoot;
     FOnGetPrompt : TGetPrompt;
+    // One style per Content line - THE per-line truth of how the scrollback is
+    // rendered (plain output vs prompt-prefixed, highlighted command). Written
+    // at the line-creating sites (Output/NewPrompt/boot/spinner); colours are
+    // stored resolved and re-resolved on a theme switch (ApplyTheme override).
+    FLineStyles: array of TLineStyle;
+    function OutputStyle: TLineStyle;
+    function CommandStyle: TLineStyle;
+    procedure StyleLines(AFirst, ACount: Integer; const AStyle: TLineStyle);
+    procedure RemoveLineStyle(AIndex: Integer);
     function LastLineIndex: Integer;
     function LastLine: string;
     procedure SetPrompt(AValue: string);
@@ -67,6 +79,8 @@ type
     procedure Paste; override;        // single-line input: strip line breaks
     procedure EvictTokens(AFirst, ALast: Integer); override;  // keep scrollback cached
     procedure PositionCaretFromMouse(X, Y: Integer); override;
+    function GetLineStyle(ALine: Integer): TLineStyle; override;
+    procedure ApplyTheme(const ATheme: TTheme); override;  // restyle the scrollback
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -247,6 +261,7 @@ begin
   begin
     SwapLines(Content.Count, 0, [string(AText)]);     // append the spinner line
     FSpinnerLine := LastLineIndex;                    // remember it for rewrites
+    StyleLines(FSpinnerLine, 1, OutputStyle);         // transient line renders as output
     RefreshView;
     ScrollBottomIntoView;                             // bring the new line into view
   end;
@@ -265,6 +280,7 @@ begin
   if FSpinnerLine >= 0 then
   begin
     SwapLines(FSpinnerLine, 1, []);   // remove the transient spinner line
+    RemoveLineStyle(FSpinnerLine);    // keep the style array aligned with Content
     FSpinnerLine := -1;
     RefreshView;
   end;
@@ -285,12 +301,15 @@ end;
 procedure TConsole.Activate;
 var
   bootMessage: TStringList;
+  First: Integer;
 begin
   try
     bootMessage := TStringList.Create;
     if Assigned(FOnBoot) then begin;
       FOnBoot(bootMessage);
+      First := Content.Count;
       Content.AddLines(bootMessage);
+      StyleLines(First, bootMessage.Count, OutputStyle);
     end;
     NewPrompt;
   finally
@@ -390,7 +409,7 @@ procedure TConsole.Output(const AText: string);
 var
   Lines: TStringList;
   Arr: array of string;
-  i: Integer;
+  i, First: Integer;
 begin
   Lines := TStringList.Create;
   try
@@ -398,7 +417,9 @@ begin
     SetLength(Arr, Lines.Count);
     for i := 0 to Lines.Count - 1 do
       Arr[i] := Lines[i];
-    SwapLines(Content.Count, 0, Arr);   // append (non-recorded)
+    First := Content.Count;
+    SwapLines(First, 0, Arr);           // append (non-recorded)
+    StyleLines(First, Length(Arr), OutputStyle);
   finally
     Lines.Free;
   end;
@@ -412,11 +433,99 @@ begin
   // Hence: never evict.
 end;
 
+{ ---- per-line render styles ---- }
+
+function TConsole.OutputStyle: TLineStyle;
+begin
+  // Plain program output: one colour, never lexed.
+  Result.Highlighted := False;
+  Result.PlainColor := CurrentTheme.OutputColor;
+  Result.PrefixLen := 0;
+  Result.PrefixColor := Result.PlainColor;
+end;
+
+function TConsole.CommandStyle: TLineStyle;
+begin
+  // A command line: the prompt prefix in the prompt colour, the typed command
+  // syntax-highlighted. PrefixLen is captured from the CURRENT prompt, so each
+  // scrollback line keeps the length its prompt had at the time.
+  Result.Highlighted := True;
+  Result.PlainColor := Colors[tkText];      // used only without a highlighter
+  Result.PrefixLen := Length(FPrompt);
+  Result.PrefixColor := CurrentTheme.PromptColor;
+end;
+
+procedure TConsole.StyleLines(AFirst, ACount: Integer; const AStyle: TLineStyle);
+var
+  i, OldLen: Integer;
+begin
+  // Record the style for lines [AFirst, AFirst+ACount). Lines the array never
+  // covered (e.g. TContent's initial empty line) are gap-filled as output.
+  if AFirst + ACount > Length(FLineStyles) then
+  begin
+    OldLen := Length(FLineStyles);
+    SetLength(FLineStyles, AFirst + ACount);
+    for i := OldLen to Length(FLineStyles) - 1 do
+      FLineStyles[i] := OutputStyle;
+  end;
+  for i := AFirst to AFirst + ACount - 1 do
+    FLineStyles[i] := AStyle;
+end;
+
+procedure TConsole.RemoveLineStyle(AIndex: Integer);
+var
+  i: Integer;
+begin
+  // Keep the array aligned with Content when a line is removed (spinner line).
+  if (AIndex < 0) or (AIndex >= Length(FLineStyles)) then
+    Exit;
+  for i := AIndex to Length(FLineStyles) - 2 do
+    FLineStyles[i] := FLineStyles[i + 1];
+  SetLength(FLineStyles, Length(FLineStyles) - 1);
+end;
+
+function TConsole.GetLineStyle(ALine: Integer): TLineStyle;
+begin
+  if (ALine >= 0) and (ALine < Length(FLineStyles)) then
+    Result := FLineStyles[ALine]
+  else
+    // A line added behind the console's back (host poking Content directly):
+    // the safest rendering is plain output.
+    Result := OutputStyle;
+end;
+
+procedure TConsole.ApplyTheme(const ATheme: TTheme);
+var
+  i: Integer;
+begin
+  inherited ApplyTheme(ATheme);
+  // The stored styles carry resolved colours; re-resolve them against the new
+  // theme so the whole scrollback restyles. (Runs during the base constructor
+  // too - harmlessly, over an empty array.)
+  for i := 0 to Length(FLineStyles) - 1 do
+    if FLineStyles[i].Highlighted then
+    begin
+      FLineStyles[i].PlainColor := ATheme.Syntax[tkText];
+      FLineStyles[i].PrefixColor := ATheme.PromptColor;
+    end
+    else
+    begin
+      FLineStyles[i].PlainColor := ATheme.OutputColor;
+      FLineStyles[i].PrefixColor := ATheme.OutputColor;
+    end;
+end;
+
 procedure TConsole.NewPrompt;
+var
+  First: Integer;
 begin
   if Assigned(FOnGetPrompt) then
      FPrompt := FOnGetPrompt();
-  SwapLines(Content.Count, 0, [FPrompt]);   // append the prompt line (non-recorded)
+  First := Content.Count;
+  SwapLines(First, 0, [FPrompt]);    // append the prompt line (non-recorded)
+  // CommandStyle reads FPrompt, so this captures the prompt length AFTER
+  // OnGetPrompt possibly changed it - each line keeps its historical length.
+  StyleLines(First, 1, CommandStyle);
   FInputActive := True;
   ResetUndo;                         // undo is scoped to the current input line
   RefreshView;                       // re-wrap first, so the caret maps correctly

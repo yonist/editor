@@ -24,6 +24,18 @@ type
     procedure Cancel;                                                     // hide
   end;
 
+  { TLineStyle
+    How a single logical line is rendered. Produced per line by the virtual
+    GetLineStyle: the base answers "the normal way" for every line (eligible for
+    highlighting, no prefix), which renders exactly as before; TConsole answers
+    from its stored per-line styles (plain output vs prompt-prefixed command). }
+  TLineStyle = record
+    Highlighted: Boolean;   // False -> the whole line in PlainColor, never lexed
+    PlainColor: TColor;     // colour when not highlighted (or no highlighter set)
+    PrefixLen: Integer;     // leading columns drawn in PrefixColor (0 = none)
+    PrefixColor: TColor;    // e.g. the console prompt colour
+  end;
+
   { TTextControl
     Common parent for TCodeEditor and TConsole.
     Paints the content with a monospace font and handles basic text input
@@ -125,7 +137,6 @@ type
     procedure DrawSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer; AColor: TColor);
     procedure DrawColoredSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer);
     procedure DrawRow(const ARow: TVisualRow; AYp: Integer);
-    procedure ApplyTheme(const ATheme: TTheme);
     procedure SetThemeKind(AValue: TThemeKind);
   protected
     function GetHasSelection: Boolean;
@@ -146,6 +157,13 @@ type
     // keyboard gate: the base is editable unless ReadOnly; TConsole also requires
     // a live prompt. Override to add further conditions.
     function CanEdit: Boolean; virtual;
+    // How should this logical line be rendered? One call per painted line (and
+    // per line during state propagation). The base's default renders exactly as
+    // the pre-style pipeline did, so the editor is unaffected.
+    function GetLineStyle(ALine: Integer): TLineStyle; virtual;
+    // Apply a theme's palette. Virtual so TConsole can refresh the colours it
+    // stores per line (scrollback styles must follow a theme switch).
+    procedure ApplyTheme(const ATheme: TTheme); virtual;
     // Single gate for keyboard input. When it returns False the key is swallowed
     // by KeyDown before any dispatch. When not CanEdit, only the non-mutating
     // copy/select keys (Ctrl+C / Ctrl+A / Ctrl+Insert) are let through.
@@ -550,7 +568,12 @@ begin
   if (FLayout = nil) or (FLineHeight <= 0) then
     Exit;
   Bottom := FTopMargin + FLayout.Count * FLineHeight;   // pixel bottom of the last row
-  ScrollIntoView(Bottom - FLineHeight, Bottom);
+  // Reach past the row by the spacer bands (same convention as EnsureCaretVisible):
+  // the visible region ends FBottomMargin above the client bottom, so without the
+  // extension the row lands flush at the edge - painted, then covered by the band
+  // (that hid the console's spinner line). ABottom = ContentHeight lands it fully
+  // visible, flush against the band.
+  ScrollIntoView(Bottom - FLineHeight - FTopMargin, Bottom + FBottomMargin);
 end;
 
 { ---- selection + clipboard ---- }
@@ -841,10 +864,17 @@ begin
   end;
 
   // Propagate start-states forward by lexing each predecessor (tokens discarded).
+  // Non-highlighted lines are never lexed and contribute the normal state, so
+  // e.g. console output containing an odd quote can't poison the lines after it.
   while FStatesValid <= AUpTo do
   begin
-    S := FHL[FStatesValid - 1].State;
-    FHighlighter.ScanLine(FContent[FStatesValid - 1], S, FScanTokens, Cnt);
+    if GetLineStyle(FStatesValid - 1).Highlighted then
+    begin
+      S := FHL[FStatesValid - 1].State;
+      FHighlighter.ScanLine(FContent[FStatesValid - 1], S, FScanTokens, Cnt);
+    end
+    else
+      S := 0;
     FHL[FStatesValid].State := S;
     Inc(FStatesValid);
   end;
@@ -906,33 +936,64 @@ begin
     DrawSpan(ALine, ARowStart, col, ATo, AYp, FColors[tkText]);
 end;
 
+function TTextControl.GetLineStyle(ALine: Integer): TLineStyle;
+begin
+  // Default: no prefix, eligible for syntax highlighting. Renders exactly as the
+  // pre-style pipeline did, so TCodeEditor and the base are unaffected.
+  Result.Highlighted := True;
+  Result.PlainColor := FColors[tkText];
+  Result.PrefixLen := 0;
+  Result.PrefixColor := FColors[tkText];
+end;
+
 procedure TTextControl.DrawRow(const ARow: TVisualRow; AYp: Integer);
 var
-  L, RowEnd, C0, C1, LineLen: Integer;
-  HasSel: Boolean;
+  L, RowEnd, C0, C1, LineLen, Start, PfxEnd: Integer;
+  HasSel, Lexed: Boolean;
+  Style: TLineStyle;
 begin
   L := ARow.LogicalLine;
   LineLen := Length(FContent[L]);
   RowEnd := ARow.StartCol + ARow.Length;
+  Style := GetLineStyle(L);
+
+  // A prefix (e.g. the console prompt) occupies the leading columns of the
+  // line's FIRST visual row in its own colour, overriding highlighting; the
+  // normal drawing then starts at the Start boundary. Wrapped continuation rows
+  // (StartCol > 0) never carry the prefix.
+  Start := ARow.StartCol;
+  if (ARow.StartCol = 0) and (Style.PrefixLen > 0) then
+  begin
+    PfxEnd := Min(Style.PrefixLen, RowEnd);
+    DrawSpan(L, ARow.StartCol, 0, PfxEnd, AYp, Style.PrefixColor);
+    Start := PfxEnd;
+    if Start >= RowEnd then
+      Exit;                          // the whole visible row is prefix
+  end;
+
+  // A line is token-coloured only if its style allows it AND a lexer is set.
+  Lexed := Style.Highlighted and (FHighlighter <> nil);
 
   HasSel := (not FSelection.IsEmpty) and
             FSelection.RangeOnLine(L, LineLen, C0, C1);
   if HasSel then
   begin
-    if C0 < ARow.StartCol then C0 := ARow.StartCol;
+    // Clamp to the drawable range; the band never covers the prefix (which is
+    // read-only anyway and keeps its own colour).
+    if C0 < Start then C0 := Start;
     if C1 > RowEnd then C1 := RowEnd;
     if C1 <= C0 then HasSel := False;
   end;
 
-  if FHighlighter <> nil then
+  if Lexed then
     EnsureLineTokens(L);
 
   if not HasSel then
   begin
-    if FHighlighter <> nil then
-      DrawColoredSpan(L, ARow.StartCol, ARow.StartCol, RowEnd, AYp)
+    if Lexed then
+      DrawColoredSpan(L, ARow.StartCol, Start, RowEnd, AYp)
     else
-      DrawSpan(L, ARow.StartCol, ARow.StartCol, RowEnd, AYp, FColors[tkText]);
+      DrawSpan(L, ARow.StartCol, Start, RowEnd, AYp, Style.PlainColor);
     Exit;
   end;
 
@@ -944,15 +1005,15 @@ begin
                        TextLeft + (C1 - ARow.StartCol) * FCharWidth, AYp + FLineHeight));
   Canvas.Brush.Style := bsClear;
 
-  if FHighlighter <> nil then
+  if Lexed then
   begin
-    DrawColoredSpan(L, ARow.StartCol, ARow.StartCol, C0, AYp);
+    DrawColoredSpan(L, ARow.StartCol, Start, C0, AYp);
     DrawColoredSpan(L, ARow.StartCol, C1, RowEnd, AYp);
   end
   else
   begin
-    DrawSpan(L, ARow.StartCol, ARow.StartCol, C0, AYp, FColors[tkText]);
-    DrawSpan(L, ARow.StartCol, C1, RowEnd, AYp, FColors[tkText]);
+    DrawSpan(L, ARow.StartCol, Start, C0, AYp, Style.PlainColor);
+    DrawSpan(L, ARow.StartCol, C1, RowEnd, AYp, Style.PlainColor);
   end;
   DrawSpan(L, ARow.StartCol, C0, C1, AYp, FSelFore);   // selected text
 end;

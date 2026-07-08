@@ -61,6 +61,7 @@ begin
   FTimer := TTimer.Create(nil);
   FTimer.Enabled := False;
   FTimer.Interval := 100;
+  FTimer.OnTimer := WriteSpinner;   // without this the timer ticks into nothing
 
   if not Assigned(aWriteCallback) then
     raise Exception.Create('You must a valid write callback function');
