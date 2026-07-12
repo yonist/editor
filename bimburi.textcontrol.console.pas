@@ -230,7 +230,9 @@ begin
     FAwaitingResult := True;
     FRunningCommand := Cmd;            // remembered for a possible cancel
     StartSpinner;
-  end;
+  end
+  else
+    NewPrompt;
 end;
 
 procedure TConsole.KeyDown(var Key: Word; Shift: TShiftState);
@@ -301,15 +303,14 @@ end;
 procedure TConsole.Activate;
 var
   bootMessage: TStringList;
-  First: Integer;
 begin
   try
     bootMessage := TStringList.Create;
     if Assigned(FOnBoot) then begin;
       FOnBoot(bootMessage);
-      First := Content.Count;
+      Content.Clear;
       Content.AddLines(bootMessage);
-      StyleLines(First, bootMessage.Count, OutputStyle);
+      StyleLines(0, bootMessage.Count, OutputStyle);
     end;
     NewPrompt;
   finally

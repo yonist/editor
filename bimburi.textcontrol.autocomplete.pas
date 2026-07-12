@@ -94,7 +94,9 @@ begin
   Bmp := TBitmap.Create;                // measure without needing a handle
   try
     Bmp.Canvas.Font.Assign(Font);
-    ItemHeight := Bmp.Canvas.TextHeight('Wg') + 6;
+    ItemHeight  := Bmp.Canvas.TextHeight('Wg') + 6;
+    FWidthPx  := Bmp.Canvas.TextWidth('x') * 30; // show 30 chars
+    //self.Height := ItemHeight * 10;
   finally
     Bmp.Free;
   end;
@@ -222,7 +224,7 @@ begin
   H := Min(FMaxVisible, Items.Count) * ItemHeight + 4;
 
   if Q.X + FWidthPx > Parent.ClientWidth then
-    Q.X := Parent.ClientWidth - FWidthPx;   // clamp to the form's right edge
+    Q.X := Parent.ClientWidth - FWidthPx - 3;   // clamp to the form's right edge (-3 is space from the right edge of the form)
   if Q.X < 0 then
     Q.X := 0;
 
