@@ -5,25 +5,21 @@ unit Unit1;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls, StdCtrls,
+  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls,
   bimburi.textcontrol.codeeditor, bimburi.textcontrol.console,
-  bimburi.textcontrol.highlighterpython,
-  bimburi.textcontrol.highlightersql, bimburi.textcontrol.theme,
-  bimburi.textcontrol.autocomplete;
+  bimburi.textcontrol.highlighterpython, bimburi.textcontrol.highlightersql,
+  bimburi.textcontrol.autocomplete, uOptionsPanel;
 
 type
 
-  { TForm1 }
+  { TForm1
+    Test harness: the code editor on top, the console below, and next to each
+    control a sidebar (uOptionsPanel) that toggles every option of that
+    control, so each feature can be exercised by hand independently. }
 
   TForm1 = class(TForm)
     procedure FormCreate(Sender: TObject);
   private
-    FCommandPanel: TPanel;
-    FThemeCombo: TComboBox;
-    FLoadButton: TButton;
-    FSaveButton: TButton;
-    FTestButton: TButton;
-    FReadOnlyCheck: TCheckBox;
     FTopPanel: TPanel;
     FBottomPanel: TPanel;
     FSplitter: TSplitter;
@@ -31,6 +27,8 @@ type
     FConsole: TConsole;
     FEditorAC: TAutoCompleteControl;
     FConsoleAC: TAutoCompleteControl;
+    FEditorOptions: TEditorOptions;
+    FConsoleOptions: TConsoleOptions;
     FHistory: TStringList;     // submitted commands
     FHistoryIndex: Integer;    // cursor into FHistory (Count = "current empty line")
     FAsyncTimer: TTimer;       // simulates a slow async command
@@ -43,11 +41,6 @@ type
     procedure ConsoleCancel(const Sender: TConsole; const ACommand: string);
     procedure ConsoleHistory(const Sender: TConsole; const prev: Boolean; var historyItem: string);
     procedure ConsoleBoot(const bootMessage: TStringList);
-    procedure ThemeChange(Sender: TObject);
-    procedure LoadClick(Sender: TObject);
-    procedure SaveClick(Sender: TObject);
-    procedure TestClick(Sender: TObject);
-    procedure ReadOnlyToggle(Sender: TObject);
     procedure EditorComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
     procedure ConsoleComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
   public
@@ -70,72 +63,20 @@ end;
 
 procedure TForm1.BuildLayout;
 begin
-  // Command bar across the very top: theme selector + load/save buttons.
-  FCommandPanel := TPanel.Create(Self);
-  FCommandPanel.Parent := Self;
-  FCommandPanel.Align := alTop;
-  FCommandPanel.Height := 60;
-  FCommandPanel.BevelOuter := bvNone;
-
-  FThemeCombo := TComboBox.Create(Self);
-  FThemeCombo.Parent := FCommandPanel;
-  FThemeCombo.Style := csDropDownList;         // selection only, no free text
-  FThemeCombo.Items.Add('Dark');
-  FThemeCombo.Items.Add('Light');
-  FThemeCombo.ItemIndex := 0;                  // matches the controls' default (dark)
-  FThemeCombo.Left := 8;
-  FThemeCombo.Top := 8;
-  FThemeCombo.Width := 120;
-  FThemeCombo.OnChange := @ThemeChange;
-
-  FLoadButton := TButton.Create(Self);
-  FLoadButton.Parent := FCommandPanel;
-  FLoadButton.Caption := 'Load';
-  FLoadButton.Left := 140;
-  FLoadButton.Top := 7;
-  FLoadButton.Width := 80;
-  FLoadButton.OnClick := @LoadClick;
-
-  FSaveButton := TButton.Create(Self);
-  FSaveButton.Parent := FCommandPanel;
-  FSaveButton.Caption := 'Save';
-  FSaveButton.Left := 228;
-  FSaveButton.Top := 7;
-  FSaveButton.Width := 80;
-  FSaveButton.OnClick := @SaveClick;
-
-  FTestButton := TButton.Create(Self);
-  FTestButton.Parent := FCommandPanel;
-  FTestButton.Caption := 'Test';
-  FTestButton.Left := 318;
-  FTestButton.Top := 7;
-  FTestButton.Width := 80;
-  FTestButton.OnClick := @TestClick;
-
-  // Toggle the editor between editable and read-only (to test ReadOnly mode).
-  FReadOnlyCheck := TCheckBox.Create(Self);
-  FReadOnlyCheck.Parent := FCommandPanel;
-  FReadOnlyCheck.Caption := 'Read-only';
-  FReadOnlyCheck.Left := 410;
-  FReadOnlyCheck.Top := 11;
-  FReadOnlyCheck.Width := 100;
-  FReadOnlyCheck.OnChange := @ReadOnlyToggle;
-
-  // Top panel hosts the code editor.
+  // Top pane hosts the code editor (plus its options sidebar).
   FTopPanel := TPanel.Create(Self);
   FTopPanel.Parent := Self;
   FTopPanel.Align := alTop;
-  FTopPanel.Top := FCommandPanel.Height;       // below the command bar
-  FTopPanel.Height := (ClientHeight - FCommandPanel.Height) div 2;
+  FTopPanel.Height := ClientHeight div 2;
   FTopPanel.BevelOuter := bvNone;
 
-  // Splitter sits just below the top panel and resizes the top/bottom split.
+  // Splitter sits just below the top pane and resizes the top/bottom split.
   FSplitter := TSplitter.Create(Self);
   FSplitter.Parent := Self;
   FSplitter.Align := alTop;
-  FSplitter.Top := FCommandPanel.Height + FTopPanel.Height;
+  FSplitter.Top := FTopPanel.Height;
 
-  // Bottom panel fills the rest and hosts the console.
+  // Bottom pane fills the rest and hosts the console (plus its sidebar).
   FBottomPanel := TPanel.Create(Self);
   FBottomPanel.Parent := Self;
   FBottomPanel.Align := alClient;
@@ -144,7 +85,7 @@ begin
   FEditor := TCodeEditor.Create(Self);
   FEditor.Parent := FTopPanel;
   FEditor.Align := alClient;
-  FEditor.WordWrap:= true;
+  FEditor.WordWrap := True;
   FEditor.Highlighter := PythonHighlighter;   // shared singleton
 
   FConsole := TConsole.Create(Self);
@@ -164,6 +105,16 @@ begin
   FConsoleAC.Editor := FConsole;
   FConsoleAC.OnGetProp := @ConsoleComplete;
   FConsole.Completion := FConsoleAC;
+
+  // Options sidebars: created last, so they pick up each control's final
+  // state (highlighter, completion, ...) as the initial widget values.
+  FEditorOptions := TEditorOptions.Create(Self, FEditor);
+  FEditorOptions.Parent := FTopPanel;
+  FEditorOptions.Align := alRight;
+
+  FConsoleOptions := TConsoleOptions.Create(Self, FConsole);
+  FConsoleOptions.Parent := FBottomPanel;
+  FConsoleOptions.Align := alRight;
 end;
 
 procedure TForm1.SeedEditor;
@@ -281,54 +232,6 @@ begin
     historyItem := ''                       // past the newest entry -> empty line
   else
     historyItem := FHistory[FHistoryIndex];
-end;
-
-procedure TForm1.ThemeChange(Sender: TObject);
-var
-  Kind: TThemeKind;
-begin
-  // Both controls share the selected theme.
-  if FThemeCombo.ItemIndex = 1 then
-    Kind := thLight
-  else
-    Kind := thDark;
-  FEditor.ThemeKind := Kind;
-  FConsole.ThemeKind := Kind;
-end;
-
-procedure TForm1.LoadClick(Sender: TObject);
-var
-  FS: TFileStream;
-begin
-  FS := TFileStream.Create('c:\temp\test.txt', fmOpenRead or fmShareDenyWrite);
-  try
-    FEditor.LoadFromStream(FS);
-  finally
-    FS.Free;
-  end;
-end;
-
-procedure TForm1.SaveClick(Sender: TObject);
-var
-  FS: TFileStream;
-begin
-  FS := TFileStream.Create('c:\temp\test.txt', fmCreate);
-  try
-    FEditor.SaveToStream(FS);
-  finally
-    FS.Free;
-  end;
-end;
-
-procedure TForm1.TestClick(Sender: TObject);
-begin
-  FConsole.Prompt:= 'Dev Shmec';
-end;
-
-procedure TForm1.ReadOnlyToggle(Sender: TObject);
-begin
-  FEditor.ReadOnly := FReadOnlyCheck.Checked;
-  FConsole.ReadOnly:= FReadOnlyCheck.Checked;
 end;
 
 procedure TForm1.EditorComplete(Sender: TObject; const APrefix: string;
