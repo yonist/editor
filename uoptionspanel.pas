@@ -19,7 +19,8 @@ uses
   bimburi.textcontrol.textcontrol, bimburi.textcontrol.codeeditor,
   bimburi.textcontrol.console, bimburi.textcontrol.theme,
   bimburi.textcontrol.highlighter, bimburi.textcontrol.highlighterpython,
-  bimburi.textcontrol.highlightersql, bimburi.textcontrol.consolespinner;
+  bimburi.textcontrol.highlightersql, bimburi.textcontrol.consolespinner,
+  bimburi.textcontrol.autocomplete;
 
 type
 
@@ -30,14 +31,22 @@ type
     FTarget: TTextControl;
     FNextTop: Integer;
     FSavedCompletion: IAutoComplete;   // held while the checkbox disables it
+    FCustomHL: THighlighter;           // optional 4th highlighter combo entry
+    FCustomHLName: string;             // (e.g. the console's adaptive one)
+    // The concrete popup, for the AutoOpen/MinChars rows. Held separately from
+    // FSavedCompletion because the IAutoComplete interface deliberately doesn't
+    // expose those properties (they are popup UI policy, not editor contract).
+    FPopup: TAutoCompleteControl;
     FThemeCombo: TComboBox;
     FHighlighterCombo: TComboBox;
     FWordWrapCheck: TCheckBox;
     FReadOnlyCheck: TCheckBox;
     FShowGutterCheck: TCheckBox;
     FAutoCompleteCheck: TCheckBox;
+    FAutoOpenCheck: TCheckBox;
     FTabSpacesCheck: TCheckBox;
     FGutterIntervalSpin: TSpinEdit;
+    FMinCharsSpin: TSpinEdit;
     FTabWidthSpin: TSpinEdit;
     FFontSizeSpin: TSpinEdit;
     FLeftMarginSpin: TSpinEdit;
@@ -49,6 +58,8 @@ type
     procedure ShowGutterChange(Sender: TObject);
     procedure GutterIntervalChange(Sender: TObject);
     procedure AutoCompleteChange(Sender: TObject);
+    procedure AutoOpenChange(Sender: TObject);
+    procedure MinCharsChange(Sender: TObject);
     procedure TabWidthChange(Sender: TObject);
     procedure TabSpacesChange(Sender: TObject);
     procedure FontSizeChange(Sender: TObject);
@@ -81,8 +92,14 @@ type
     { Builds the shared rows; descendants override to append their own. }
     procedure BuildRows; virtual;
   public
+    // ACustomHL/ACustomHLName: an extra host-owned highlighter offered in the
+    // combo besides the None/Python/SQL singletons. APopup: the control's
+    // autocomplete popup; when passed, the sidebar also offers its
+    // AutoOpen/MinChars policy rows.
     constructor Create(AOwner: TComponent; ATarget: TTextControl;
-      const ATitle: string); reintroduce;
+      const ATitle: string; ACustomHL: THighlighter = nil;
+      const ACustomHLName: string = '';
+      APopup: TAutoCompleteControl = nil); reintroduce;
     property Target: TTextControl read FTarget;
   end;
 
@@ -96,7 +113,8 @@ type
   protected
     procedure BuildRows; override;
   public
-    constructor Create(AOwner: TComponent; ATarget: TCodeEditor); reintroduce;
+    constructor Create(AOwner: TComponent; ATarget: TCodeEditor;
+      APopup: TAutoCompleteControl = nil); reintroduce;
   end;
 
   { TConsoleOptions - adds prompt text and spinner style }
@@ -110,7 +128,10 @@ type
   protected
     procedure BuildRows; override;
   public
-    constructor Create(AOwner: TComponent; ATarget: TConsole); reintroduce;
+    constructor Create(AOwner: TComponent; ATarget: TConsole;
+      ACustomHL: THighlighter = nil;
+      const ACustomHLName: string = '';
+      APopup: TAutoCompleteControl = nil); reintroduce;
   end;
 
 implementation
@@ -118,11 +139,15 @@ implementation
 { TTextControlOptions }
 
 constructor TTextControlOptions.Create(AOwner: TComponent;
-  ATarget: TTextControl; const ATitle: string);
+  ATarget: TTextControl; const ATitle: string; ACustomHL: THighlighter;
+  const ACustomHLName: string; APopup: TAutoCompleteControl);
 begin
   inherited Create(AOwner);
   FTarget := ATarget;
   FSavedCompletion := ATarget.Completion;
+  FCustomHL := ACustomHL;
+  FCustomHLName := ACustomHLName;
+  FPopup := APopup;
   Width := 260;
   HorzScrollBar.Visible := False;      // rows are sized to fit; only scroll down
   VertScrollBar.Increment := RowH;
@@ -137,6 +162,8 @@ begin
     Result := 1
   else if FTarget.Highlighter = THighlighter(SqlHighlighter) then
     Result := 2
+  else if (FCustomHL <> nil) and (FTarget.Highlighter = FCustomHL) then
+    Result := 3
   else
     Result := 0;
 end;
@@ -145,12 +172,25 @@ procedure TTextControlOptions.BuildRows;
 begin
   FThemeCombo := AddCombo('Theme', ['Dark', 'Light'],
     Ord(FTarget.ThemeKind = thLight), ThemeChange);
+  // Combo built without a handler: the custom entry must be appended before
+  // the initial index (possibly 3) is applied.
   FHighlighterCombo := AddCombo('Highlighter', ['None', 'Python', 'SQL'],
-    HighlighterIndex, HighlighterChange);
+    -1, nil);
+  if FCustomHL <> nil then
+    FHighlighterCombo.Items.Add(FCustomHLName);
+  FHighlighterCombo.ItemIndex := HighlighterIndex;
+  FHighlighterCombo.OnChange := HighlighterChange;
   FWordWrapCheck := AddCheck('Word wrap', FTarget.WordWrap, WordWrapChange);
   FReadOnlyCheck := AddCheck('Read-only', FTarget.ReadOnly, ReadOnlyChange);
   FAutoCompleteCheck := AddCheck('Autocomplete',
     FTarget.Completion <> nil, AutoCompleteChange);
+  if FPopup <> nil then
+  begin
+    FAutoOpenCheck := AddCheck('AC auto open', FPopup.AutoOpen,
+      AutoOpenChange);
+    FMinCharsSpin := AddSpin('AC min chars', 1, 10, FPopup.MinChars,
+      MinCharsChange);
+  end;
   FShowGutterCheck := AddCheck('Show gutter', FTarget.ShowGutter,
     ShowGutterChange);
   FGutterIntervalSpin := AddSpin('Gutter interval', 1, 100,
@@ -317,6 +357,7 @@ begin
   case FHighlighterCombo.ItemIndex of
     1: FTarget.Highlighter := PythonHighlighter;
     2: FTarget.Highlighter := SqlHighlighter;
+    3: FTarget.Highlighter := FCustomHL;
   else
     FTarget.Highlighter := nil;      // plain text
   end;
@@ -353,6 +394,16 @@ begin
       FSavedCompletion := FTarget.Completion;
     FTarget.Completion := nil;
   end;
+end;
+
+procedure TTextControlOptions.AutoOpenChange(Sender: TObject);
+begin
+  FPopup.AutoOpen := FAutoOpenCheck.Checked;
+end;
+
+procedure TTextControlOptions.MinCharsChange(Sender: TObject);
+begin
+  FPopup.MinChars := FMinCharsSpin.Value;
 end;
 
 procedure TTextControlOptions.TabWidthChange(Sender: TObject);
@@ -395,9 +446,10 @@ end;
 
 { TEditorOptions }
 
-constructor TEditorOptions.Create(AOwner: TComponent; ATarget: TCodeEditor);
+constructor TEditorOptions.Create(AOwner: TComponent; ATarget: TCodeEditor;
+  APopup: TAutoCompleteControl);
 begin
-  inherited Create(AOwner, ATarget, 'Code editor');
+  inherited Create(AOwner, ATarget, 'Code editor', nil, '', APopup);
 end;
 
 function TEditorOptions.Editor: TCodeEditor;
@@ -467,9 +519,11 @@ end;
 
 { TConsoleOptions }
 
-constructor TConsoleOptions.Create(AOwner: TComponent; ATarget: TConsole);
+constructor TConsoleOptions.Create(AOwner: TComponent; ATarget: TConsole;
+  ACustomHL: THighlighter; const ACustomHLName: string;
+  APopup: TAutoCompleteControl);
 begin
-  inherited Create(AOwner, ATarget, 'Console');
+  inherited Create(AOwner, ATarget, 'Console', ACustomHL, ACustomHLName, APopup);
 end;
 
 function TConsoleOptions.Console: TConsole;

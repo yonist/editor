@@ -8,6 +8,7 @@ uses
   Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ExtCtrls,
   bimburi.textcontrol.codeeditor, bimburi.textcontrol.console,
   bimburi.textcontrol.highlighterpython, bimburi.textcontrol.highlightersql,
+  bimburi.textcontrol.highlighteradaptive, bimburi.textcontrol.highlighterdot,
   bimburi.textcontrol.autocomplete, uOptionsPanel;
 
 type
@@ -29,6 +30,7 @@ type
     FConsoleAC: TAutoCompleteControl;
     FEditorOptions: TEditorOptions;
     FConsoleOptions: TConsoleOptions;
+    FAdaptive: TAdaptiveHighlighter;   // console: SQL, or dot-commands after '.'
     FHistory: TStringList;     // submitted commands
     FHistoryIndex: Integer;    // cursor into FHistory (Count = "current empty line")
     FAsyncTimer: TTimer;       // simulates a slow async command
@@ -41,6 +43,7 @@ type
     procedure ConsoleCancel(const Sender: TConsole; const ACommand: string);
     procedure ConsoleHistory(const Sender: TConsole; const prev: Boolean; var historyItem: string);
     procedure ConsoleBoot(const bootMessage: TStringList);
+    function GetConsolePrompt: string;
     procedure EditorComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
     procedure ConsoleComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
   public
@@ -53,6 +56,13 @@ var
 implementation
 
 {$R *.lfm}
+
+const
+  // The console's dot commands: one list drives both the dot-command
+  // highlighter (known = keyword colour) and the '.'-mode autocomplete.
+  DotCommands: array[0..12] of string = (
+    'databases', 'dump', 'exit', 'headers', 'help', 'indexes', 'mode',
+    'open', 'quit', 'read', 'schema', 'tables', 'timer');
 
 procedure TForm1.FormCreate(Sender: TObject);
 begin
@@ -91,7 +101,16 @@ begin
   FConsole := TConsole.Create(Self);
   FConsole.Parent := FBottomPanel;
   FConsole.Align := alClient;
-  FConsole.Highlighter := SqlHighlighter;      // SQL console
+
+  // Adaptive highlighting: the console lexes SQL by default, but a line whose
+  // input starts with '.' is coloured as a dot command. One highlighter is
+  // assigned once; it dispatches per line (see bimburi.textcontrol.highlighteradaptive).
+  DotCommandHighlighter.SetCommands(DotCommands);
+  FAdaptive := TAdaptiveHighlighter.Create;
+  FAdaptive.DefaultHighlighter := SqlHighlighter;
+  FAdaptive.DotHighlighter := DotCommandHighlighter;
+  FAdaptive.OnGetPrompt := @GetConsolePrompt;
+  FConsole.Highlighter := FAdaptive;
 
   // Autocomplete popups (parented to the form so they can overflow the panes).
   FEditorAC := TAutoCompleteControl.Create(Self);
@@ -108,11 +127,12 @@ begin
 
   // Options sidebars: created last, so they pick up each control's final
   // state (highlighter, completion, ...) as the initial widget values.
-  FEditorOptions := TEditorOptions.Create(Self, FEditor);
+  FEditorOptions := TEditorOptions.Create(Self, FEditor, FEditorAC);
   FEditorOptions.Parent := FTopPanel;
   FEditorOptions.Align := alRight;
 
-  FConsoleOptions := TConsoleOptions.Create(Self, FConsole);
+  FConsoleOptions := TConsoleOptions.Create(Self, FConsole, FAdaptive,
+    'Adaptive', FConsoleAC);
   FConsoleOptions.Parent := FBottomPanel;
   FConsoleOptions.Align := alRight;
 end;
@@ -167,6 +187,12 @@ procedure TForm1.ConsoleBoot(const bootMessage: TStringList);
 begin
   bootMessage.Add('TConsole - terminal control. Type a command and press Enter.');
   bootMessage.Add('Type "async" to see a spinner while a slow command runs.');
+  bootMessage.Add('Lines starting with "." switch to dot-command colours and completion.');
+end;
+
+function TForm1.GetConsolePrompt: string;
+begin
+  Result := FConsole.Prompt;    // the adaptive highlighter strips it per line
 end;
 
 function TForm1.ConsoleCommand(const console: TConsole;
@@ -189,7 +215,6 @@ begin
   // Synchronous: print a response now and show the next prompt ourselves.
   if ACommand <> '' then
     FConsole.Output('you typed: ' + ACommand + #13#10 + 'Good for you!');
-  FConsole.NewPrompt;
   Result := ccSync;
 end;
 
@@ -197,6 +222,7 @@ procedure TForm1.AsyncDone(Sender: TObject);
 begin
   FAsyncTimer.Enabled := False;                 // one-shot
   FConsole.CommandResult('async result for: ' + FAsyncCommand);
+
 end;
 
 procedure TForm1.ConsoleCancel(const Sender: TConsole; const ACommand: string);
@@ -259,6 +285,17 @@ const
 var
   i: Integer;
 begin
+  // Adaptive completion: '.' input completes dot commands, anything else SQL.
+  // '.' is not a word character, so for ".he" the prefix is "he" and accepting
+  // an item replaces just the word - the dot stays; hence items carry no dot.
+  if Copy(FConsole.CurrentInput, 1, 1) = '.' then
+  begin
+    for i := 0 to High(DotCommands) do
+      if (APrefix = '') or SameText(Copy(DotCommands[i], 1, Length(APrefix)), APrefix) then
+        AItems.Add(DotCommands[i]);
+    Exit;
+  end;
+
   for i := 0 to High(Words) do
     if (APrefix = '') or SameText(Copy(Words[i], 1, Length(APrefix)), APrefix) then
       AItems.Add(Words[i]);
@@ -270,6 +307,9 @@ begin
     FAsyncTimer.Enabled := False;   // stop a stray tick during teardown
   FHistory.Free;
   inherited Destroy;
+  // After inherited: the console (an owned component, holding a non-owning
+  // reference to this highlighter) is gone by now.
+  FAdaptive.Free;
 end;
 
 end.

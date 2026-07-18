@@ -24,12 +24,22 @@ type
     FMaxVisible: Integer;
     FWidthPx: Integer;
     FBg, FSelBg, FText, FSelText: TColor;
+    FMinChars: Integer;        // min word length before an IMPLICIT open
+    FAutoOpen: Boolean;        // open while typing, without Ctrl+Space
+    // One-shot guard consumed by the next NotifyChanged. Accepting a completion
+    // hides the popup and then edits the text (ReplaceWordAtCaret -> AfterEdit
+    // -> NotifyChanged); with AutoOpen on, that very edit would immediately
+    // re-open the popup, because the word now at the caret is the accepted item
+    // itself (certainly >= MinChars). The old "hide first, so NotifyChanged is
+    // a no-op" trick only worked while NotifyChanged was gated on Visible -
+    // AutoOpen removes that gate, so the accept edit must be swallowed here.
+    FSuppressNextAuto: Boolean;
     procedure SetEditor(AValue: TTextControl);
     procedure ApplyFont;
     procedure ReadTheme;
     procedure MoveSel(ADelta: Integer);
     procedure PositionNearCaret;
-    procedure DoUpdate;
+    procedure DoUpdate(AExplicit: Boolean);
     procedure DoResult;
     procedure DrawItemHandler(Control: TWinControl; AIndex: Integer;
       ARect: TRect; AState: TOwnerDrawState);
@@ -49,6 +59,16 @@ type
 
     property Editor: TTextControl read FEditor write SetEditor;
     property OnGetProp: TACProviderEvent read FOnGetProp write FOnGetProp;
+    // MinChars gates OPENING only (and only implicit opens): once the popup is
+    // visible, the existing close rules apply unchanged - it closes on an empty
+    // prefix or zero matches, not when the prefix shrinks below MinChars, so
+    // backspacing from 3 chars to 2 doesn't slam it shut mid-thought.
+    property MinChars: Integer read FMinChars write FMinChars;
+    // Open automatically as the user types. Fires from ANY edit that leaves a
+    // word of >= MinChars at the caret (typing, but also backspacing into a
+    // word, paste, undo) - a uniform rule, chosen over "insertions only",
+    // which would need an edit-kind threaded through AfterEdit.
+    property AutoOpen: Boolean read FAutoOpen write FAutoOpen;
   end;
 
 implementation
@@ -63,6 +83,7 @@ begin
   BorderStyle := bsSingle;
   TabStop := False;                    // never a tab target
   Visible := False;
+  FMinChars := 1;
   FMaxVisible := 10;
   FWidthPx := 260;
   ItemHeight := 20;                     // provisional; ApplyFont sizes it to the font
@@ -154,13 +175,24 @@ end;
 
 procedure TAutoCompleteControl.Trigger;
 begin
-  DoUpdate;                           // explicit request (Ctrl+Space)
+  DoUpdate(True);                     // explicit request (Ctrl+Space)
 end;
 
 procedure TAutoCompleteControl.NotifyChanged;
 begin
-  if Visible then
-    DoUpdate;                         // re-fetch the prefix; hides if nothing matches
+  // Swallow exactly one change notification after an accept (see the
+  // FSuppressNextAuto declaration for why). The accept edit always produces a
+  // NotifyChanged, so the flag can never linger.
+  if FSuppressNextAuto then
+  begin
+    FSuppressNextAuto := False;
+    Exit;
+  end;
+  // The editor now notifies on every edit even while we are hidden (so that
+  // AutoOpen is possible at all); when neither visible nor auto-opening,
+  // there is nothing to do.
+  if Visible or FAutoOpen then
+    DoUpdate(False);                  // re-fetch the prefix; hides if nothing matches
 end;
 
 procedure TAutoCompleteControl.ThemeChanged;
@@ -177,17 +209,38 @@ begin
     Hide;
 end;
 
-procedure TAutoCompleteControl.DoUpdate;
+procedure TAutoCompleteControl.DoUpdate(AExplicit: Boolean);
 var
   Prefix: string;
 begin
   if FEditor = nil then
     Exit;
   Prefix := FEditor.WordAtCaret;
-  if Prefix = '' then                 // need at least one typed char to open
+
+  // Explicit (Ctrl+Space) bypasses every prefix rule, including the empty
+  // prefix: "I asked, show me everything". The provider already handles
+  // APrefix = '' (returns the full list), and accepting with no word at the
+  // caret degenerates to a plain insert in ReplaceWordAtCaret. This also
+  // covers the console's "." line: '.' is not a word char, so right after
+  // typing it the prefix is empty - yet the dot-command list should show.
+  if not AExplicit then
   begin
-    Cancel;
-    Exit;
+    if Visible then
+    begin
+      // Already open: original close rule only (empty prefix = word gone).
+      if Prefix = '' then
+      begin
+        Cancel;
+        Exit;
+      end;
+    end
+    else
+    begin
+      // Implicit OPEN (AutoOpen): gated by MinChars. The '' check also keeps
+      // a MinChars of 0 from popping the list on every edit.
+      if (Prefix = '') or (Length(Prefix) < FMinChars) then
+        Exit;
+    end;
   end;
 
   Items.BeginUpdate;
@@ -251,7 +304,10 @@ begin
     Exit;
   end;
   S := Items[ItemIndex];
-  Hide;                               // hide first, so the edit's NotifyChanged is a no-op
+  Hide;
+  // Hiding alone no longer silences the accept edit's NotifyChanged (AutoOpen
+  // reacts while hidden) - arm the one-shot suppressor instead.
+  FSuppressNextAuto := True;
   FEditor.ReplaceWordAtCaret(S);
   if FEditor.CanFocus then
     FEditor.SetFocus;                 // a mouse pick must not leave the list focused

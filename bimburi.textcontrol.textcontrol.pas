@@ -1315,8 +1315,11 @@ begin
   SyncGoalCol;         // a horizontal edit resets the preferred column
   ReconcileCaret;      // recompute the caret pixel once, scroll into view, place
   Invalidate;
-  if (FCompletion <> nil) and Completion.Active then
-    Completion.NotifyChanged;   // re-filter against the new prefix
+  // Notify even while the popup is hidden: auto-open (popup-side policy) can
+  // only work if it hears about every edit. NotifyChanged self-gates, so with
+  // auto-open off a hidden popup still ignores this - behaviour is unchanged.
+  if FCompletion <> nil then
+    Completion.NotifyChanged;
 end;
 
 procedure TTextControl.InsertChar(ACh: Char);
