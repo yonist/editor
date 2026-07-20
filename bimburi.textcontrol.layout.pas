@@ -31,6 +31,7 @@ type
     FCount: Integer;
     FWordWrap: Boolean;
     FWrapCols: Integer;     // available columns per visual row
+    FMaxCols: Integer;      // widest row, in columns (maintained by AddRow)
     function GetRow(AIndex: Integer): TVisualRow;
     procedure AddRow(ALogicalLine, AStartCol, ALength: Integer);
     procedure WrapLine(ALogicalLine: Integer);
@@ -44,6 +45,10 @@ type
     function VisualRowOf(ALogicalLine, ACol: Integer): Integer;
 
     property Count: Integer read FCount;
+    // Widest row in columns (= longest logical line when not wrapping; bounded
+    // by WrapCols when wrapping). Costs one compare per row inside Rebuild, so
+    // the host gets the horizontal content extent with no extra pass or state.
+    property MaxCols: Integer read FMaxCols;
     property Rows[AIndex: Integer]: TVisualRow read GetRow; default;
   end;
 
@@ -84,6 +89,8 @@ begin
   FRows[FCount].StartCol := AStartCol;
   FRows[FCount].Length := ALength;
   Inc(FCount);
+  if AStartCol + ALength > FMaxCols then
+    FMaxCols := AStartCol + ALength;
 end;
 
 procedure TLayout.WrapLine(ALogicalLine: Integer);
@@ -153,6 +160,7 @@ var
   i: Integer;
 begin
   FCount := 0;
+  FMaxCols := 0;   // recomputed from scratch, so it can never go stale
 
   if FContent.Count = 0 then
   begin

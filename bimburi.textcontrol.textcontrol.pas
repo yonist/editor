@@ -136,7 +136,10 @@ type
     procedure EnsureLineTokens(ALine: Integer);
     procedure DrawSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer; AColor: TColor);
     procedure DrawColoredSpan(ALine, ARowStart, AFrom, ATo, AYp: Integer);
-    procedure DrawRow(const ARow: TVisualRow; AYp: Integer);
+    // AVisFirst/AVisLast: the visible column window (from the horizontal scroll
+    // position), so a row's drawing cost is bounded by the viewport, not the
+    // line length. With wrap on the window always covers whole rows.
+    procedure DrawRow(const ARow: TVisualRow; AYp, AVisFirst, AVisLast: Integer);
     procedure SetThemeKind(AValue: TThemeKind);
   protected
     function GetHasSelection: Boolean;
@@ -465,8 +468,8 @@ function TTextControl.CaretClientPos: TPoint;
 begin
   if FCaretDirty then
     RecalcCaretPixel;
-  // Content-space pixel minus the scroll offset; X already includes LeftMargin.
-  Result := Point(FCaretContentX, FCaretContentY - ScrollOffsetY);
+  // Content-space pixel minus the scroll offsets; X already includes LeftMargin.
+  Result := Point(FCaretContentX - ScrollOffsetX, FCaretContentY - ScrollOffsetY);
 end;
 
 function TTextControl.CurrentTheme: TTheme;
@@ -513,10 +516,20 @@ begin
 end;
 
 procedure TTextControl.PlaceCaret;
+var
+  SX: Integer;
 begin
-  // Cheap: content-space pixel -> screen, just subtract the scroll offset.
+  // Cheap: content-space pixel -> screen, just subtract the scroll offsets.
   // (If the caret's row is scrolled off-screen, Win32 clips it.)
-  FCaret.MoveTo(FCaretContentX, FCaretContentY - ScrollOffsetY);
+  SX := FCaretContentX - ScrollOffsetX;
+  // The Win32 caret clips to the window, not to our text clip rect, so a caret
+  // scrolled behind the gutter (or past the right edge) must be parked
+  // off-screen by hand. Gated on the bar so wrap-on behaviour is untouched
+  // (without horizontal overflow the caret can't leave the text band anyway).
+  if HScrollBarVisible and ((SX < TextLeft) or (SX >= ViewportWidth)) then
+    FCaret.MoveTo(-100, -100)
+  else
+    FCaret.MoveTo(SX, FCaretContentY - ScrollOffsetY);
 end;
 
 procedure TTextControl.RefreshCaret;
@@ -544,6 +557,13 @@ begin
   // band and reaches ContentHeight on the last row (landing it flush).
   ScrollIntoView(FCaretContentY - FTopMargin,
                  FCaretContentY + FLineHeight + FBottomMargin);
+
+  // Horizontal leg: same pattern with TextLeft in the top-margin role.
+  // Subtracting it from the left target keeps the caret right of the gutter
+  // (and resolves to content-0 at column 0); the right target keeps one cell
+  // ahead of the caret visible. With wrap on ContentWidth is 0, so the clamp
+  // makes this a no-op.
+  ScrollIntoViewX(FCaretContentX - TextLeft, FCaretContentX + FCharWidth);
 end;
 
 procedure TTextControl.ReconcileCaret;
@@ -905,8 +925,8 @@ begin
   if ATo <= AFrom then
     Exit;
   Canvas.Font.Color := AColor;
-  Canvas.TextOut(TextLeft + (AFrom - ARowStart) * FCharWidth, AYp,
-    Copy(FContent[ALine], AFrom + 1, ATo - AFrom));
+  Canvas.TextOut(TextLeft + (AFrom - ARowStart) * FCharWidth - ScrollOffsetX,
+    AYp, Copy(FContent[ALine], AFrom + 1, ATo - AFrom));
 end;
 
 procedure TTextControl.DrawColoredSpan(ALine, ARowStart, AFrom, ATo,
@@ -946,7 +966,8 @@ begin
   Result.PrefixColor := FColors[tkText];
 end;
 
-procedure TTextControl.DrawRow(const ARow: TVisualRow; AYp: Integer);
+procedure TTextControl.DrawRow(const ARow: TVisualRow; AYp, AVisFirst,
+  AVisLast: Integer);
 var
   L, RowEnd, C0, C1, LineLen, Start, PfxEnd: Integer;
   HasSel, Lexed: Boolean;
@@ -954,7 +975,13 @@ var
 begin
   L := ARow.LogicalLine;
   LineLen := Length(FContent[L]);
-  RowEnd := ARow.StartCol + ARow.Length;
+  // Clamp the drawable span to the visible column window: with horizontal
+  // scrolling a row can be arbitrarily long, and everything below draws only
+  // [Start, RowEnd), so this caps the cost at the viewport width. The window
+  // is relative to the row's left edge (column AVisFirst of THIS row is the
+  // first visible cell), so shift it by StartCol to get absolute line columns -
+  // for wrapped continuation rows the two spaces differ.
+  RowEnd := Min(ARow.StartCol + ARow.Length, ARow.StartCol + AVisLast);
   Style := GetLineStyle(L);
 
   // A prefix (e.g. the console prompt) occupies the leading columns of the
@@ -965,11 +992,16 @@ begin
   if (ARow.StartCol = 0) and (Style.PrefixLen > 0) then
   begin
     PfxEnd := Min(Style.PrefixLen, RowEnd);
-    DrawSpan(L, ARow.StartCol, 0, PfxEnd, AYp, Style.PrefixColor);
+    DrawSpan(L, ARow.StartCol, Max(0, AVisFirst), PfxEnd, AYp, Style.PrefixColor);
     Start := PfxEnd;
     if Start >= RowEnd then
       Exit;                          // the whole visible row is prefix
   end;
+
+  if Start < ARow.StartCol + AVisFirst then
+    Start := ARow.StartCol + AVisFirst;
+  if Start >= RowEnd then
+    Exit;                            // row is entirely outside the visible window
 
   // A line is token-coloured only if its style allows it AND a lexer is set.
   Lexed := Style.Highlighted and (FHighlighter <> nil);
@@ -1001,8 +1033,9 @@ begin
   // selection foreground inside.
   Canvas.Brush.Style := bsSolid;
   Canvas.Brush.Color := FSelBack;
-  Canvas.FillRect(Rect(TextLeft + (C0 - ARow.StartCol) * FCharWidth, AYp,
-                       TextLeft + (C1 - ARow.StartCol) * FCharWidth, AYp + FLineHeight));
+  Canvas.FillRect(Rect(
+    TextLeft + (C0 - ARow.StartCol) * FCharWidth - ScrollOffsetX, AYp,
+    TextLeft + (C1 - ARow.StartCol) * FCharWidth - ScrollOffsetX, AYp + FLineHeight));
   Canvas.Brush.Style := bsClear;
 
   if Lexed then
@@ -1623,10 +1656,11 @@ begin
   if (FCompletion <> nil) and Completion.Active then
     Completion.Cancel;                        // clicking away closes the popup
 
-  // Begin a gesture in the content area (not on the reserved scrollbar strip).
+  // Begin a gesture in the content area (not on either scrollbar strip).
   // We can't yet tell a click from a drag, so defer the caret move to MouseUp
   // (a drag selects and must NOT move the caret - invariant of this feature).
-  if (Button = mbLeft) and (X < ClientWidth - BarWidth) then
+  if (Button = mbLeft) and (X < ClientWidth - BarWidth) and
+     (Y < ViewportHeight) then
   begin
     // A double-click selects the identifier under the cursor. Require X >= TextLeft
     // so clicks on the gutter (or the left margin) fall through to a normal click -
@@ -1728,9 +1762,9 @@ begin
   if FCharWidth > 0 then
   begin
     if SnapToNearest then
-      Off := (X - TextLeft + FCharWidth div 2) div FCharWidth
+      Off := (X + ScrollOffsetX - TextLeft + FCharWidth div 2) div FCharWidth
     else
-      Off := (X - TextLeft) div FCharWidth;
+      Off := (X + ScrollOffsetX - TextLeft) div FCharWidth;
   end
   else
     Off := 0;
@@ -1809,6 +1843,7 @@ begin
 
   FCaret.SetLineHeight(FLineHeight);
   ScrollStep := FLineHeight;         // wheel scrolls in whole-row steps
+  HScrollStep := FCharWidth;         // horizontal wheel scrolls in whole columns
   RebuildLayout;                     // wrap width depends on the cell width
 end;
 
@@ -1816,13 +1851,6 @@ procedure TTextControl.RebuildLayout;
 var
   Cols: Integer;
 begin
-  // Bottom margin: absorb the leftover pixels of the area below the fixed top
-  // spacer, so what remains is an exact number of rows - no partial line.
-  if (FLineHeight > 0) and (ClientHeight - FTopMargin > 0) then
-    FBottomMargin := (ClientHeight - FTopMargin) mod FLineHeight
-  else
-    FBottomMargin := 0;
-
   // The gutter width depends only on the line count, so recompute it here (before
   // the wrap width) - no gutter<->layout feedback loop.
   FGutter.Recalc(FContent.Count, FCharWidth);
@@ -1835,6 +1863,25 @@ begin
 
   FLayout.SetParams(FWordWrap, Cols);
   FLayout.Rebuild;
+
+  // Tell the scroll base how wide the content is. When wrapping, push 0: that
+  // disables horizontal scrolling wholesale (MaxScrollX = 0 clamps the offset
+  // back to 0, the bar hides) with no special cases in the scroll base. When
+  // not wrapping, the widest line + a trailing pad mirroring the left inset.
+  // This must be settled BEFORE the bottom margin: reserving the bottom bar
+  // strip changes ViewportHeight (and ContentWidth never depends on any
+  // height, so this ordering can't feed back).
+  if FWordWrap or (FCharWidth <= 0) then
+    ContentWidth := 0
+  else
+    ContentWidth := TextLeft + FLayout.MaxCols * FCharWidth + FLeftMargin;
+
+  // Bottom margin: absorb the leftover pixels of the area below the fixed top
+  // spacer, so what remains is an exact number of rows - no partial line.
+  if (FLineHeight > 0) and (ViewportHeight - FTopMargin > 0) then
+    FBottomMargin := (ViewportHeight - FTopMargin) mod FLineHeight
+  else
+    FBottomMargin := 0;
 
   // Tell the scroll base how tall the content is now. Both spacers are part of it,
   // so scrolling to the end lands the last row flush against the bottom margin.
@@ -2014,13 +2061,13 @@ end;
 
 procedure TTextControl.PaintContent;
 var
-  i, First, Last, LFirst, LLast: Integer;
+  i, First, Last, VisFirst, VisLast, LFirst, LLast: Integer;
   Row: TVisualRow;
 begin
   // Hide the system caret while we draw over the client area.
   FCaret.SuspendForPaint;
 
-  // Clear the background (the base draws the bar over the reserved strip after).
+  // Clear the background (the base draws the bars over the reserved strips after).
   Canvas.Brush.Style := bsSolid;
   Canvas.Brush.Color := Color;
   Canvas.FillRect(ClientRect);
@@ -2032,7 +2079,7 @@ begin
   begin
     // Content space includes the top spacer, so drop it before dividing into rows.
     First := (ScrollOffsetY - FTopMargin) div FLineHeight;
-    Last := (ScrollOffsetY + ClientHeight - FTopMargin) div FLineHeight;
+    Last := (ScrollOffsetY + ViewportHeight - FTopMargin) div FLineHeight;
   end
   else
   begin
@@ -2044,6 +2091,26 @@ begin
   if Last > FLayout.Count - 1 then
     Last := FLayout.Count - 1;
 
+  // Visible column window (the horizontal counterpart of First/Last): floor on
+  // the left edge so a partially scrolled-in character is included, one past on
+  // the right for the same reason. DrawRow clamps to it, which caps painting at
+  // O(visible cells) regardless of line length.
+  if FCharWidth > 0 then
+  begin
+    VisFirst := ScrollOffsetX div FCharWidth;
+    VisLast := (ScrollOffsetX + ViewportWidth - TextLeft) div FCharWidth + 1;
+  end
+  else
+  begin
+    VisFirst := 0;
+    VisLast := MaxInt;
+  end;
+
+  // Clip the rows to the text band: a partially visible first column (or the
+  // selection band) must not bleed over the gutter, margins or bar strips.
+  Canvas.ClipRect := Rect(TextLeft, 0, ViewportWidth, ViewportHeight);
+  Canvas.Clipping := True;
+
   LFirst := MaxInt;
   LLast := -1;
   for i := First to Last do
@@ -2052,11 +2119,13 @@ begin
     if Row.LogicalLine >= FContent.Count then
       Continue;
 
-    DrawRow(Row, FTopMargin + i * FLineHeight - ScrollOffsetY);
+    DrawRow(Row, FTopMargin + i * FLineHeight - ScrollOffsetY, VisFirst, VisLast);
 
     if Row.LogicalLine < LFirst then LFirst := Row.LogicalLine;
     if Row.LogicalLine > LLast then LLast := Row.LogicalLine;
   end;
+
+  Canvas.Clipping := False;          // gutter, spacer bands and bars draw unclipped
 
   // Drop token caches for lines that scrolled out of view (the console keeps
   // its immutable scrollback by overriding EvictTokens).
@@ -2067,7 +2136,7 @@ begin
   // It shares the text's top spacer so the numbers line up with their rows.
   if FLineHeight > 0 then
     FGutter.Draw(Canvas, FLayout, First, Last, FLineHeight, ScrollOffsetY,
-      ClientHeight, FTopMargin);
+      ViewportHeight, FTopMargin);
 
   // Keep the top and bottom margins fixed, blank spacers: rows scroll *under*
   // them, so repaint the bands after the content so nothing renders partially at
@@ -2081,9 +2150,11 @@ begin
   end;
   if FBottomMargin > 0 then
   begin
-    FGutter.CoverBand(Canvas, ClientHeight - FBottomMargin, ClientHeight);
-    Canvas.FillRect(Rect(FGutter.Width, ClientHeight - FBottomMargin,
-      ClientWidth, ClientHeight));
+    // The band sits above the (possibly reserved) horizontal bar strip, which
+    // is why it is measured from ViewportHeight, not ClientHeight.
+    FGutter.CoverBand(Canvas, ViewportHeight - FBottomMargin, ViewportHeight);
+    Canvas.FillRect(Rect(FGutter.Width, ViewportHeight - FBottomMargin,
+      ClientWidth, ViewportHeight));
   end;
   Canvas.Brush.Style := bsClear;
 
