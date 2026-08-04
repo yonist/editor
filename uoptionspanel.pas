@@ -19,7 +19,9 @@ uses
   bimburi.textcontrol.textcontrol, bimburi.textcontrol.codeeditor,
   bimburi.textcontrol.console, bimburi.textcontrol.theme,
   bimburi.textcontrol.highlighter, bimburi.textcontrol.highlighterpython,
-  bimburi.textcontrol.highlightersql, bimburi.textcontrol.consolespinner,
+  bimburi.textcontrol.highlightersql, bimburi.textcontrol.highlighterjson,
+  bimburi.textcontrol.highlighterxml,
+  bimburi.textcontrol.consolespinner,
   bimburi.textcontrol.autocomplete;
 
 type
@@ -162,8 +164,12 @@ begin
     Result := 1
   else if FTarget.Highlighter = THighlighter(SqlHighlighter) then
     Result := 2
-  else if (FCustomHL <> nil) and (FTarget.Highlighter = FCustomHL) then
+  else if FTarget.Highlighter = THighlighter(JsonHighlighter) then
     Result := 3
+  else if FTarget.Highlighter = THighlighter(XmlHighlighter) then
+    Result := 4
+  else if (FCustomHL <> nil) and (FTarget.Highlighter = FCustomHL) then
+    Result := 5
   else
     Result := 0;
 end;
@@ -173,9 +179,9 @@ begin
   FThemeCombo := AddCombo('Theme', ['Dark', 'Light'],
     Ord(FTarget.ThemeKind = thLight), ThemeChange);
   // Combo built without a handler: the custom entry must be appended before
-  // the initial index (possibly 3) is applied.
-  FHighlighterCombo := AddCombo('Highlighter', ['None', 'Python', 'SQL'],
-    -1, nil);
+  // the initial index (possibly 5) is applied.
+  FHighlighterCombo := AddCombo('Highlighter',
+    ['None', 'Python', 'SQL', 'JSON', 'XML'], -1, nil);
   if FCustomHL <> nil then
     FHighlighterCombo.Items.Add(FCustomHLName);
   FHighlighterCombo.ItemIndex := HighlighterIndex;
@@ -357,7 +363,9 @@ begin
   case FHighlighterCombo.ItemIndex of
     1: FTarget.Highlighter := PythonHighlighter;
     2: FTarget.Highlighter := SqlHighlighter;
-    3: FTarget.Highlighter := FCustomHL;
+    3: FTarget.Highlighter := JsonHighlighter;
+    4: FTarget.Highlighter := XmlHighlighter;
+    5: FTarget.Highlighter := FCustomHL;
   else
     FTarget.Highlighter := nil;      // plain text
   end;

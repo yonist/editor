@@ -135,6 +135,11 @@ begin
     'Adaptive', FConsoleAC);
   FConsoleOptions.Parent := FBottomPanel;
   FConsoleOptions.Align := alRight;
+
+  // Start with the console focused. This also exercises the initial-activation
+  // caret path: the enter notification reaches the control before the OS focus
+  // does (see TTextControl.UpdateCaretVisibility).
+  ActiveControl := FConsole;
 end;
 
 procedure TForm1.SeedEditor;
@@ -203,8 +208,9 @@ begin
     FHistory.Add(ACommand);
   FHistoryIndex := FHistory.Count;
 
-  // "async": kick off slow work and let the console spin until AsyncDone fires.
-  if SameText(ACommand, 'async') then
+  // "async" (optionally with parameters, e.g. "async SELECT"): kick off slow
+  // work and let the console spin until AsyncDone fires.
+  if SameText(ACommand, 'async') or SameText(Copy(ACommand, 1, 6), 'async ') then
   begin
     FAsyncCommand := ACommand;
     FAsyncTimer.Enabled := True;
@@ -213,9 +219,9 @@ begin
   end;
 
   // Synchronous: print a response now and show the next prompt ourselves.
-  if ACommand <> '' then
-    FConsole.Output('you typed: ' + ACommand + #13#10 + 'Good for you!');
-  Result := ccSync;
+  //if ACommand <> '' then
+  //  FConsole.Output('you typed: ' + ACommand + #13#10 + 'Good for you!');
+  //Result := ccSync;
 end;
 
 procedure TForm1.AsyncDone(Sender: TObject);

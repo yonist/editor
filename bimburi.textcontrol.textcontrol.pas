@@ -160,6 +160,23 @@ type
     // keyboard gate: the base is editable unless ReadOnly; TConsole also requires
     // a live prompt. Override to add further conditions.
     function CanEdit: Boolean; virtual;
+    // Enforce "caret visible <=> editable and focused". Call after anything that
+    // can flip CanEdit (ReadOnly toggle; the console locking input while a
+    // command - notably an async one - runs, and unlocking it on NewPrompt).
+    //
+    // AFocusArriving: only DoEnter passes True, to skip the widgetset Focused
+    // test. During the form's INITIAL activation LCL delivers the enter
+    // notification (CM_ENTER) before the OS focus handle actually reaches the
+    // control, so Focused is still False inside DoEnter - and no second enter
+    // event arrives when the real WM_SETFOCUS lands (the active control did not
+    // change), so a plain Focused test would leave the caret hidden for good
+    // when the control is the form's initial ActiveControl. The enter event
+    // itself is the focus evidence, so DoEnter may assert it.
+    // (Considered alternative: keep the plain Focused test everywhere and add
+    // the missing edge instead - re-evaluate from WM_SETFOCUS/InitializeWnd
+    // when real focus arrives. Rejected: it duplicates what DoEnter already
+    // means and adds a second focus-notification path to keep in sync.)
+    procedure UpdateCaretVisibility(AFocusArriving: Boolean = False);
     // How should this logical line be rendered? One call per painted line (and
     // per line during state propagation). The base's default renders exactly as
     // the pre-style pipeline did, so the editor is unaffected.
@@ -266,6 +283,12 @@ type
     procedure ReplaceWordAtCaret(const AText: string);   // replaces the whole word (undoable)
     function CaretClientPos: TPoint;                     // caret top-left, client coords
     function CurrentTheme: TTheme;
+    // May the control accept typing right now? The public face of the protected
+    // CanEdit (False while ReadOnly, or while the console's input is locked).
+    // Collaborators use it to behave sensibly around a locked control - e.g. the
+    // autocomplete popup must not auto-open over a console that is executing an
+    // async command.
+    function Editable: Boolean;
 
     property Content: TContent read FContent;
     // Read-only access to the current selection, for host-side processing. Reading
@@ -1503,6 +1526,11 @@ begin
   Result := not FReadOnly;
 end;
 
+function TTextControl.Editable: Boolean;
+begin
+  Result := CanEdit;   // virtual: the console adds "prompt is live" to this
+end;
+
 function TTextControl.AcceptsKey(Key: Word; Shift: TShiftState): Boolean;
 begin
   if CanEdit then
@@ -1949,15 +1977,25 @@ begin
   if FReadOnly = AValue then
     Exit;
   FReadOnly := AValue;
-  // Match the caret to the new mode: hide it when going read-only, restore it if
-  // we're leaving read-only while focused (otherwise DoEnter shows it on focus).
-  if FReadOnly then
-    FCaret.Hide
-  else if Focused then
+  UpdateCaretVisibility;   // hide when going read-only, restore when leaving
+end;
+
+procedure TTextControl.UpdateCaretVisibility(AFocusArriving: Boolean);
+begin
+  // The single rule for the system caret: it exists only while the control is
+  // focused AND can accept typing (CanEdit is virtual - the console adds "the
+  // prompt is live", so the caret disappears while a command runs, e.g. during
+  // an async command's spinner, and returns with the next prompt).
+  // AFocusArriving substitutes for the Focused test when the caller IS the
+  // focus notification itself (DoEnter) - see the declaration for the initial-
+  // activation ordering that makes this necessary.
+  if CanEdit and (AFocusArriving or Focused) and HandleAllocated then
   begin
     FCaret.Show(Handle);
     RefreshCaret;
-  end;
+  end
+  else
+    FCaret.Hide;
 end;
 
 function TTextControl.TextLeft: Integer;
@@ -2011,10 +2049,10 @@ procedure TTextControl.DoEnter;
 begin
   inherited DoEnter;
   //MeasureFont;            // refresh metrics + apply the font to the canvas
-  if FReadOnly then
-    Exit;                   // read-only: no caret, even when focused
-  FCaret.Show(Handle);
-  RefreshCaret;
+  // True: the enter event is itself the focus evidence - on initial form
+  // activation the widgetset Focused flag lags this notification (see
+  // UpdateCaretVisibility's declaration).
+  UpdateCaretVisibility(True);
 end;
 
 procedure TTextControl.DoExit;

@@ -218,6 +218,8 @@ begin
   Cmd := CurrentInput;
   FInputActive := False;              // lock input; the host shows the next prompt
   ResetUndo;                          // the submitted line is now immutable history
+  UpdateCaretVisibility;              // no caret while the command runs (async:
+                                      // the spinner period); NewPrompt restores it
 
   // The host decides per command whether it answered synchronously (it already
   // called Output/NewPrompt) or will deliver a result later via CommandResult.
@@ -528,6 +530,8 @@ begin
   // OnGetPrompt possibly changed it - each line keeps its historical length.
   StyleLines(First, 1, CommandStyle);
   FInputActive := True;
+  UpdateCaretVisibility;             // input is live again -> the caret returns
+                                     // (it was hidden on submit in NewLine)
   ResetUndo;                         // undo is scoped to the current input line
   RefreshView;                       // re-wrap first, so the caret maps correctly
   // Caret just after the prompt; SetPosition also scrolls it into view.

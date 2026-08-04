@@ -236,8 +236,19 @@ begin
     end
     else
     begin
-      // Implicit OPEN (AutoOpen): gated by MinChars. The '' check also keeps
-      // a MinChars of 0 from popping the list on every edit.
+      // Implicit OPEN (AutoOpen): only when the editor can accept typing at
+      // all. Without this gate, submitting an async console command re-opens
+      // the popup over the locked console: Enter's edit path runs AfterEdit,
+      // whose NotifyChanged fires while the caret still sits at the end of the
+      // just-submitted word - a valid prefix, but input is already locked, and
+      // nothing on the async path would ever close the popup again. The same
+      // gate covers any other notify reaching a non-editable control (e.g. in
+      // ReadOnly mode). Explicit opens need no such check: while locked,
+      // AcceptsKey swallows Ctrl+Space before Trigger can be reached.
+      if not FEditor.Editable then
+        Exit;
+      // Gated by MinChars. The '' check also keeps a MinChars of 0 from
+      // popping the list on every edit.
       if (Prefix = '') or (Length(Prefix) < FMinChars) then
         Exit;
     end;
