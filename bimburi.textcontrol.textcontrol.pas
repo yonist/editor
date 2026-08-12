@@ -1684,6 +1684,21 @@ begin
   if (FCompletion <> nil) and Completion.Active then
     Completion.Cancel;                        // clicking away closes the popup
 
+  // Terminal-style paste (PuTTY / Windows Terminal): a right-click pastes at
+  // the CARET - it is a paste gesture, not a positioning one, and the virtual
+  // Paste supplies all the rules (selection replace + undo; the console strips
+  // line breaks and its Paste refuses while input is inactive). An assigned
+  // PopupMenu takes precedence - LCL shows it via WM_CONTEXTMENU, which never
+  // reaches this branch - so the host's menu is the opt-out. CanEdit keeps a
+  // read-only viewer / locked console silent. Deliberately handled here rather
+  // than in DoContextPopup: that hook fires after button-UP and also for the
+  // keyboard Menu key (Shift+F10), which must not paste.
+  if (Button = mbRight) and (PopupMenu = nil) and CanEdit then
+  begin
+    Paste;
+    Exit;
+  end;
+
   // Begin a gesture in the content area (not on either scrollbar strip).
   // We can't yet tell a click from a drag, so defer the caret move to MouseUp
   // (a drag selects and must NOT move the caret - invariant of this feature).
