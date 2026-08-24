@@ -134,6 +134,8 @@ end;
 procedure TContent.SetText(const AValue: string);
 begin
   FLines.Text := AValue;
+  if FLines.Count = 0 then
+    FLines.Add('');            // keep the never-empty invariant
 end;
 
 end.
