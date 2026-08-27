@@ -66,6 +66,7 @@ type
   protected
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
     function CanEdit: Boolean; override;   // editable only while the prompt is live
+    function CompletionForwardsEnter: Boolean; override;  // accept + submit in one Enter
     function EditableStart: TPoint; override;
     procedure InsertChar(ACh: Char); override;
     procedure DeleteBack; override;
@@ -172,6 +173,15 @@ begin
   // (between commands, or awaiting an async result) the base's AcceptsKey drops
   // to the read-only key set, keeping the copy/select conveniences on scrollback.
   Result := (inherited CanEdit) and FInputActive;
+end;
+
+function TConsole.CompletionForwardsEnter: Boolean;
+begin
+  // At a prompt, picking a completion and submitting are one gesture: the popup
+  // accepts the word and leaves Enter un-consumed, so it falls through to
+  // NewLine and submits the completed command. (Tab remains accept-only, for
+  // completing a word and then typing on.)
+  Result := True;
 end;
 
 function TConsole.EditableStart: TPoint;

@@ -40,7 +40,9 @@ type
     procedure MoveSel(ADelta: Integer);
     procedure PositionNearCaret;
     procedure DoUpdate(AExplicit: Boolean);
-    procedure DoResult;
+    // Accept the highlighted item into the editor. True when a word was
+    // actually replaced; False on the degenerate no-valid-selection path.
+    function DoResult: Boolean;
     procedure DrawItemHandler(Control: TWinControl; AIndex: Integer;
       ARect: TRect; AState: TOwnerDrawState);
   protected
@@ -163,8 +165,20 @@ begin
   case Key of
     VK_UP:     MoveSel(-1);
     VK_DOWN:   MoveSel(1);
-    VK_RETURN,
-    VK_TAB:    DoResult;
+    VK_RETURN: begin
+                 // Accept, and - where the editor asks for it (the console) -
+                 // leave the key un-consumed so it falls through to the
+                 // editor's own Enter handling and submits the completed
+                 // command: pick + submit in one gesture. The DoResult guard
+                 // keeps a degenerate (no selection) Enter from submitting
+                 // anything. The editor popup keeps accept-only behaviour.
+                 if DoResult and FEditor.CompletionForwardsEnter then
+                 begin
+                   Result := False;
+                   Exit;
+                 end;
+               end;
+    VK_TAB:    DoResult;              // accept-only: complete, then type on
     VK_ESCAPE: Cancel;
   else
     Result := False;                  // let the editor handle it (typing re-filters)
@@ -305,15 +319,17 @@ begin
   SetBounds(Q.X, Y, FWidthPx, H);
 end;
 
-procedure TAutoCompleteControl.DoResult;
+function TAutoCompleteControl.DoResult: Boolean;
 var
   S: string;
 begin
+  Result := False;
   if (ItemIndex < 0) or (ItemIndex >= Items.Count) then
   begin
     Cancel;
     Exit;
   end;
+  Result := True;
   S := Items[ItemIndex];
   Hide;
   // Hiding alone no longer silences the accept edit's NotifyChanged (AutoOpen

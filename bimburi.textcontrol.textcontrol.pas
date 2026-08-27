@@ -289,6 +289,15 @@ type
     // autocomplete popup must not auto-open over a console that is executing an
     // async command.
     function Editable: Boolean;
+    // Should an autocomplete accept via Enter ALSO be delivered to the control?
+    // The editor says no - Enter just accepts (forwarding it would insert a
+    // line break). The console overrides with True: at a prompt, picking a
+    // parameter and submitting the command are one gesture, so the popup
+    // accepts the word and leaves the key un-consumed for NewLine to submit.
+    // (Considered alternative: a ForwardEnter property on the popup, set per
+    // instance by the host. Rejected - this is control-KIND semantics, and a
+    // console whose host forgot the flag would behave inconsistently.)
+    function CompletionForwardsEnter: Boolean; virtual;
 
     property Content: TContent read FContent;
     // Read-only access to the current selection, for host-side processing. Reading
@@ -1529,6 +1538,11 @@ end;
 function TTextControl.Editable: Boolean;
 begin
   Result := CanEdit;   // virtual: the console adds "prompt is live" to this
+end;
+
+function TTextControl.CompletionForwardsEnter: Boolean;
+begin
+  Result := False;     // editor: Enter only accepts (see the declaration)
 end;
 
 function TTextControl.AcceptsKey(Key: Word; Shift: TShiftState): Boolean;
