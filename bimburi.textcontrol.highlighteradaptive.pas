@@ -43,6 +43,7 @@ type
   private
     FDefault: THighlighter;       // not owned (typically a shared singleton)
     FDotChild: THighlighter;      // not owned
+    FAtChild: THighlighter;       // not owned; '@script' lines. Must be single-line (end state always 0)
     FOnGetPrompt: TAdaptivePromptFunc;
     FSeenPrompts: TStringList;    // every prompt ever seen, for scrollback
     function PromptLenOf(const ALine: string): Integer;
@@ -55,6 +56,7 @@ type
 
     property DefaultHighlighter: THighlighter read FDefault write FDefault;
     property DotHighlighter: THighlighter read FDotChild write FDotChild;
+    property AtHighlighter: THighlighter read FAtChild write FAtChild;
     property OnGetPrompt: TAdaptivePromptFunc read FOnGetPrompt write FOnGetPrompt;
   end;
 
@@ -148,8 +150,12 @@ begin
   // Normal state: strip the prompt, dispatch on the input's first character.
   PfxLen := PromptLenOf(ALine);
   Rest := Copy(ALine, PfxLen + 1, MaxInt);
+  // '@' needs no continuation tag of its own: the at child is single-line by
+  // contract, so its end state is always 0 and never round-trips
   if (Rest <> '') and (Rest[1] = '.') then
     Child := FDotChild
+  else if (Rest <> '') and (Rest[1] = '@') and Assigned(FAtChild) then
+    Child := FAtChild
   else
     Child := FDefault;
   if Child = nil then

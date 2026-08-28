@@ -280,6 +280,7 @@ type
     // Autocomplete support. The editor only exposes the prefix, a word-replace,
     // the caret position and its theme; the popup does everything else.
     function WordAtCaret: string;                        // identifier chars left of caret
+    function LineBeforeWordAtCaret: string;              // line text left of the word (context: '.', '@', ...)
     procedure ReplaceWordAtCaret(const AText: string);   // replaces the whole word (undoable)
     function CaretClientPos: TPoint;                     // caret top-left, client coords
     function CurrentTheme: TTheme;
@@ -470,6 +471,22 @@ begin
   while (StartCol > 0) and IsWordChar(Line[StartCol]) do
     Dec(StartCol);
   Result := Copy(Line, StartCol + 1, Col - StartCol);
+end;
+
+function TTextControl.LineBeforeWordAtCaret: string;
+var
+  Line: string;
+  Col, StartCol: Integer;
+begin
+  // The complement of WordAtCaret: everything on the line left of the word.
+  // Lets the autocomplete host see what introduced the word (a '.' command,
+  // a '@' script, plain text) without owning any lexing rules here.
+  Line := FContent[FCaret.Line];
+  Col := FCaret.Col;
+  StartCol := Col;
+  while (StartCol > 0) and IsWordChar(Line[StartCol]) do
+    Dec(StartCol);
+  Result := Copy(Line, 1, StartCol);
 end;
 
 procedure TTextControl.ReplaceWordAtCaret(const AText: string);

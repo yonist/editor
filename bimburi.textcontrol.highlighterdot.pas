@@ -8,25 +8,34 @@ uses
   bimburi.textcontrol.highlighter;
 
 type
-  { TDotCommandHighlighter - single-line lexer for ".command arg" console
-    input (sqlite-style dot commands). The ".name" head is tkKeyword when the
-    name is a known command (plain tkIdentifier otherwise, so typos stay
-    uncoloured); after it: -f/--flag as tkComment (visually muted - operator
-    shares the text colour in both themes), quoted strings and numbers as
-    usual, bare words plain. Dot commands never span lines, so the end state
-    is always 0. }
+  TKnownWordFunc = function(const AName: string): Boolean of object;
+
+  { TDotCommandHighlighter - single-line lexer for "<sigil>command arg"
+    console input: '.' for the dot commands (sqlite-style), '@' for the saved
+    scripts. The "<sigil>name" head is tkKeyword when the name is known
+    (plain tkIdentifier otherwise, so typos stay uncoloured); after it:
+    -f/--flag as tkComment (visually muted - operator shares the text colour
+    in both themes), quoted strings and numbers as usual, bare words plain.
+    Sigil commands never span lines, so the end state is always 0. }
   TDotCommandHighlighter = class(THighlighter)
   private
-    FCommands: array of string;   // known command names, without the dot
+    FSigil: Char;                 // the first character the head starts with
+    FCommands: array of string;   // known command names, without the sigil
+    FOnKnownWord: TKnownWordFunc; // dynamic alternative to the list (scripts)
     function KnownCommand(const AName: string): Boolean;
   public
-    // Empty list (the default) = every ".name" counts as known.
+    constructor Create(ASigil: Char = '.');
+    // Empty list (the default) = every "<sigil>name" counts as known.
     procedure SetCommands(const AList: array of string);
     procedure ScanLine(const ALine: string; var AState: TLexState;
       var ATokens: TTokenArray; out ACount: Integer); override;
+    // When assigned, consulted instead of the list (names that change at
+    // runtime, like the saved scripts)
+    property OnKnownWord: TKnownWordFunc read FOnKnownWord write FOnKnownWord;
   end;
 
-function DotCommandHighlighter: TDotCommandHighlighter;   // shared singleton
+function DotCommandHighlighter: TDotCommandHighlighter;   // shared singleton, '.'
+function AtCommandHighlighter: TDotCommandHighlighter;    // shared singleton, '@'
 
 implementation
 
@@ -35,12 +44,26 @@ uses
 
 var
   _Dot: TDotCommandHighlighter = nil;
+  _At: TDotCommandHighlighter = nil;
 
 function DotCommandHighlighter: TDotCommandHighlighter;
 begin
   if _Dot = nil then
-    _Dot := TDotCommandHighlighter.Create;
+    _Dot := TDotCommandHighlighter.Create('.');
   Result := _Dot;
+end;
+
+function AtCommandHighlighter: TDotCommandHighlighter;
+begin
+  if _At = nil then
+    _At := TDotCommandHighlighter.Create('@');
+  Result := _At;
+end;
+
+constructor TDotCommandHighlighter.Create(ASigil: Char);
+begin
+  inherited Create;
+  FSigil := ASigil;
 end;
 
 procedure TDotCommandHighlighter.SetCommands(const AList: array of string);
@@ -56,6 +79,8 @@ function TDotCommandHighlighter.KnownCommand(const AName: string): Boolean;
 var
   i: Integer;
 begin
+  if Assigned(FOnKnownWord) then
+    Exit(FOnKnownWord(AName));
   if Length(FCommands) = 0 then
     Exit(True);
   for i := 0 to High(FCommands) do        // ~a dozen entries: linear is fine
@@ -76,8 +101,8 @@ begin
   n := Length(ALine);
   i := 1;
 
-  // ".name" head at the very start of the input.
-  if (n >= 1) and (ALine[1] = '.') then
+  // "<sigil>name" head at the very start of the input.
+  if (n >= 1) and (ALine[1] = FSigil) then
   begin
     i := 2;
     while (i <= n) and IsIdentChar(ALine[i]) do
@@ -135,4 +160,5 @@ end;
 initialization
 finalization
   FreeAndNil(_Dot);
+  FreeAndNil(_At);
 end.

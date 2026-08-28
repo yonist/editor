@@ -10,7 +10,7 @@ uses
 
 type
   { The host fills AItems with candidates for APrefix (it does the matching). }
-  TACProviderEvent = procedure(Sender: TObject; const APrefix: string;
+  TACProviderEvent = procedure(Sender: TObject; const APrefix: string; const ALineBeforeWord: string;
     AItems: TStrings) of object;
 
   { TAutoCompleteControl
@@ -272,7 +272,7 @@ begin
   try
     Items.Clear;
     if Assigned(FOnGetProp) then
-      FOnGetProp(Self, Prefix, Items);
+      FOnGetProp(Self, Prefix, FEditor.LineBeforeWordAtCaret, Items);
   finally
     Items.EndUpdate;
   end;
