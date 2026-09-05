@@ -309,6 +309,14 @@ type
     property HasSelection: Boolean read GetHasSelection;
     property Completion: IAutoComplete read GetCompletion write SetCompletion;
     property LineHeight: Integer read FLineHeight;
+    property CharWidth: Integer read FCharWidth;
+    // How many visual rows the CURRENT content occupies at the given
+    // viewport width - for hosts that size the control to fit its content
+    // (the result panel's centered message). Runs the real wrap rule on a
+    // throwaway layout over the same content, so word-boundary breaks are
+    // honored (a ceil(length/cols) estimate undercounts those); the live
+    // layout is untouched.
+    function VisualRowsForWidth(AViewportWidth: Integer): Integer;
     property Caret: TCaret read FCaret;
     property WordWrap: Boolean read FWordWrap write SetWordWrap;
     // Read-only mode: rejects all keyboard editing (only Ctrl+C / Ctrl+A /
@@ -1919,6 +1927,30 @@ begin
   ScrollStep := FLineHeight;         // wheel scrolls in whole-row steps
   HScrollStep := FCharWidth;         // horizontal wheel scrolls in whole columns
   RebuildLayout;                     // wrap width depends on the cell width
+end;
+
+function TTextControl.VisualRowsForWidth(AViewportWidth: Integer): Integer;
+var
+  Tmp: TLayout;
+  Cols: Integer;
+begin
+  if FCharWidth <= 0 then
+    MeasureFont;   // safe without a handle (bitmap fallback)
+
+  // The same column formula RebuildLayout feeds the live layout.
+  if FCharWidth > 0 then
+    Cols := Max(1, (AViewportWidth - TextLeft) div FCharWidth)
+  else
+    Cols := 1;
+
+  Tmp := TLayout.Create(FContent);
+  try
+    Tmp.SetParams(FWordWrap, Cols);
+    Tmp.Rebuild;
+    Result := Tmp.Count;
+  finally
+    Tmp.Free;
+  end;
 end;
 
 procedure TTextControl.RebuildLayout;
