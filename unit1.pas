@@ -44,8 +44,8 @@ type
     procedure ConsoleHistory(const Sender: TConsole; const prev: Boolean; var historyItem: string);
     procedure ConsoleBoot(const bootMessage: TStringList);
     function GetConsolePrompt: string;
-    procedure EditorComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
-    procedure ConsoleComplete(Sender: TObject; const APrefix: string; AItems: TStrings);
+    procedure EditorComplete(Sender: TObject; const APrefix: string; const ALineBeforeWord: string;AItems: TStrings);
+    procedure ConsoleComplete(Sender: TObject; const APrefix: string; const ALineBeforeWord: string;AItems: TStrings);
   public
     destructor Destroy; override;
   end;
@@ -267,7 +267,7 @@ begin
 end;
 
 procedure TForm1.EditorComplete(Sender: TObject; const APrefix: string;
-  AItems: TStrings);
+  const ALineBeforeWord: string; AItems: TStrings);
 const
   Words: array[0..24] of string = (
     'def', 'class', 'import', 'from', 'return', 'print', 'range', 'len', 'for',
@@ -282,7 +282,7 @@ begin
 end;
 
 procedure TForm1.ConsoleComplete(Sender: TObject; const APrefix: string;
-  AItems: TStrings);
+  const ALineBeforeWord: string; AItems: TStrings);
 const
   Words: array[0..24] of string = (
     'SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET',

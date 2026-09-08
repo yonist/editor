@@ -90,6 +90,10 @@ type
     procedure SaveToStream(AStream: TStream); override;
     procedure LoadFromStream(AStream: TStream); override;
 
+    // Programmatic insert (e.g. a dropped file path): single-line input, so
+    // line breaks are stripped - the same rule Paste applies.
+    procedure InsertAtCaret(const AText: string); override;
+
     // Program -> console: append read-only output (splits embedded newlines).
     procedure Output(const AText: string);
     // Begin a fresh editable input line.
@@ -365,18 +369,22 @@ begin
 end;
 
 procedure TConsole.Paste;
+begin
+  // Same path as a programmatic insert: InsertAtCaret strips the line breaks
+  // and the base gates on CanEdit (= input active), so no separate guard here.
+  InsertAtCaret(Clipboard.AsText);
+end;
+
+procedure TConsole.InsertAtCaret(const AText: string);
 var
   S: string;
 begin
-  if not FInputActive then
-    Exit;
-  // The input is a single line: remove every line break from the pasted text.
-  S := Clipboard.AsText;
-  S := StringReplace(S, #13#10, '', [rfReplaceAll]);
+  // The input is a single line: remove every line break before inserting.
+  // (Serves both a host drop - e.g. a file path - and Paste above.)
+  S := StringReplace(AText, #13#10, '', [rfReplaceAll]);
   S := StringReplace(S, #10, '', [rfReplaceAll]);
   S := StringReplace(S, #13, '', [rfReplaceAll]);
-  InsertText(S);
-  AfterEdit;
+  inherited InsertAtCaret(S);
 end;
 
 procedure TConsole.PositionCaretFromMouse(X, Y: Integer);

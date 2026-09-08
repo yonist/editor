@@ -273,6 +273,15 @@ type
     procedure Undo;
     procedure Redo;
 
+    // Programmatic insert at the caret, for hosts - e.g. dropping a file onto
+    // the console should put its path where the caret is. Same semantics as
+    // typing/pasting: replaces any selection as a single undo step, then the
+    // standard post-edit refresh (re-wrap, caret into view, completion notify).
+    // Silently ignored while the control is not editable (ReadOnly, or the
+    // console between prompts). Virtual: the console strips line breaks first
+    // (its input is a single line).
+    procedure InsertAtCaret(const AText: string); virtual;
+
     // Content serialization (text only). Virtual: TConsole overrides to refuse.
     procedure SaveToStream(AStream: TStream); virtual;
     procedure LoadFromStream(AStream: TStream); virtual;
@@ -1396,6 +1405,14 @@ end;
 procedure TTextControl.Paste;
 begin
   InsertText(Clipboard.AsText);
+  AfterEdit;
+end;
+
+procedure TTextControl.InsertAtCaret(const AText: string);
+begin
+  if not CanEdit then
+    Exit;                 // read-only / locked console: a host drop does nothing
+  InsertText(AText);      // replaces any selection, one undo step, caret after
   AfterEdit;
 end;
 
