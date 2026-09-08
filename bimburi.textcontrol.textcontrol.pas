@@ -1740,18 +1740,27 @@ begin
   if (FCompletion <> nil) and Completion.Active then
     Completion.Cancel;                        // clicking away closes the popup
 
-  // Terminal-style paste (PuTTY / Windows Terminal): a right-click pastes at
-  // the CARET - it is a paste gesture, not a positioning one, and the virtual
-  // Paste supplies all the rules (selection replace + undo; the console strips
-  // line breaks and its Paste refuses while input is inactive). An assigned
-  // PopupMenu takes precedence - LCL shows it via WM_CONTEXTMENU, which never
-  // reaches this branch - so the host's menu is the opt-out. CanEdit keeps a
-  // read-only viewer / locked console silent. Deliberately handled here rather
-  // than in DoContextPopup: that hook fires after button-UP and also for the
-  // keyboard Menu key (Shift+F10), which must not paste.
-  if (Button = mbRight) and (PopupMenu = nil) and CanEdit then
+  // Terminal-style right-click (Windows Terminal convention): with a selection
+  // it COPIES it (CopySelection also clears the selection - Ctrl+C semantics -
+  // so two right-clicks are a complete mouse-only workflow: select scrollback,
+  // right-click copies, right-click again pastes at the caret); without one it
+  // PASTES at the CARET - a paste gesture, not a positioning one, and the
+  // virtual Paste supplies all the rules (selection replace + undo; the console
+  // strips line breaks). The gates are deliberately asymmetric: copy has no
+  // CanEdit test - copying from a read-only viewer or the console's locked
+  // scrollback (e.g. while a command runs) is legitimate, mirroring Ctrl+C in
+  // the read-only key set - while paste stays silent when not editable. An
+  // assigned PopupMenu takes precedence - LCL shows it via WM_CONTEXTMENU,
+  // which never reaches this branch - so the host's menu is the opt-out.
+  // Deliberately handled here rather than in DoContextPopup: that hook fires
+  // after button-UP and also for the keyboard Menu key (Shift+F10), which must
+  // not paste.
+  if (Button = mbRight) and (PopupMenu = nil) then
   begin
-    Paste;
+    if HasSelection then
+      CopySelection
+    else if CanEdit then
+      Paste;
     Exit;
   end;
 
