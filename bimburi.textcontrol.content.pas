@@ -60,7 +60,11 @@ end;
 
 function TContent.Add(const ALine: string): Integer;
 begin
-  Result := FLines.Add(ALine);
+ if ALine.Contains(LineEnding) then
+    FLines.AddStrings(ALine.Split([LineEnding]))
+  else
+    FLines.Add(ALine);
+  result := FLines.Count;
 end;
 
 procedure TContent.Insert(AIndex: Integer; const ALine: string);
